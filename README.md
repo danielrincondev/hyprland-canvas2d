@@ -1,21 +1,23 @@
 # hyprland-grid
 
-A two-dimensional scrolling layout for Hyprland. Each configured workspace owns a flat set of world-space tile rectangles and an independent viewport. 
+A two-dimensional scrolling layout for Hyprland built on a **structural model**: each workspace owns ordered rows of cells and an independent viewport. Window rectangles are derived from that structure (`rows × cells`, weighted) rather than stored per window, so closing any window automatically makes its former neighbors adjacent, rows always split the full screen height, and cell widths can never exceed the screen. The viewport pans freely across the canvas and reveals focused windows minimally.
 
 ## Features
 
 - Independent canvas, viewport, insertion mode, and focus memory per workspace.
-- Flat world-space rectangle model; unbounded positive and negative coordinates.
-- Spatial focus in all four directions.
+- Structural row/cell model; placement is derived, so closing any window automatically makes its former neighbors adjacent and every row/cell always spans its axis fully.
+- First window fills the work area; subsequent windows stack right of focus at default-width presets.
+- `Super+Shift+Down` demotes the whole focused window into the row below (creating it when absent) aligned near its source edge; `Up` promotes symmetrically. Horizontal moves reorder within the row and wrap at its edges.
+- Vertical resize transfers height between neighbor rows and is clamped so no row can shrink below the minimum; single-row workspaces refuse it.
+- Widths cycle through configurable presets relative to siblings and are clamped so total width never exceeds the screen.
+- Spatial focus in all four directions over derived geometry.
 - Minimal automatic viewport reveal on keyboard focus or click focus.
 - Explicit four-way panning with configurable/default amounts.
-- Directional tile movement by swapping complete world rectangles.
-- Coupled directional resize: a moved edge steals from or returns space to every split neighbor touching that edge.
-- Automatic shelf wrapping plus persistent `insert left/right/up/down/auto` modes.
+- Persistent `insert left/right/up/down/auto` modes.
 - `center focused`, `fit all`, and `reset viewport`.
 - Mixed layouts through current `hl.workspace_rule({ layout = ... })` syntax.
-- Floating windows remain outside the canvas; a temporarily floated tile recovers its prior world rectangle when retiled.
-- Monitor work-area origin, logical size, resolution, and scale changes affect only viewport derivation, not world geometry.
+- Floating windows remain outside the canvas; retitling a floated window inserts it fresh at the current anchor.
+- Monitor work-area origin, logical size, resolution, and scale changes rescale the derived canvas while preserving structure proportions.
 - Standard Hyprland window movement/resize animations apply to viewport translations.
 
 ## Installation

@@ -180,49 +180,163 @@ function Geometry.directional_neighbor(tiles, source_key, direction, options)
     return best_key, best_score
 end
 
-function Geometry.edge_candidates(tiles, source_key, direction, epsilon)
-    epsilon = epsilon or 0.001
-    local source = tiles[source_key]
-    if not is_present(source) or not DIRECTIONS[direction] then
-        return {}, nil
+-- Distribute `total` pixels across positive weights so that:
+--   * sizes sum to exactly `total`;
+--   * every size is >= minimum whenever feasible;
+--   * weights below the minimum threshold are pinned at exactly `minimum`.
+-- When count × minimum exceeds total, falls back to an even split because the
+-- constraint is physically unsatisfiable on that axis.
+function Geometry.distribute(weights, total, minimum)
+    local count = #weights
+    local sizes = {}
+    if count == 0 then
+        return sizes
     end
 
-    local candidates = {}
-    local nearest_gap
+    if count * minimum >= total then
+        local even = total / count
+        for index = 1, count do
+            sizes[index] = even
+        end
+        return sizes
+    end
 
-    for key, candidate in pairs(tiles) do
-        if key ~= source_key and is_present(candidate) then
-            local overlap
-            local gap
+    local order = {}
+    for index = 1, count do
+        order[index] = index
+    end
+    table.sort(order, function(a, b)
+        if weights[a] == weights[b] then
+            return a < b
+        end
+        return weights[a] < weights[b]
+    end)
 
-            if direction == "right" then
-                overlap = overlap_1d(source.y, rect_bottom(source), candidate.y, rect_bottom(candidate))
-                gap = candidate.x - rect_right(source)
-            elseif direction == "left" then
-                overlap = overlap_1d(source.y, rect_bottom(source), candidate.y, rect_bottom(candidate))
-                gap = source.x - rect_right(candidate)
-            elseif direction == "down" then
-                overlap = overlap_1d(source.x, rect_right(source), candidate.x, rect_right(candidate))
-                gap = candidate.y - rect_bottom(source)
-            else
-                overlap = overlap_1d(source.x, rect_right(source), candidate.x, rect_right(candidate))
-                gap = source.y - rect_bottom(candidate)
-            end
+    local active_weight = 0
+    for _, weight in ipairs(weights) do
+        active_weight = active_weight + weight
+    end
 
-            if overlap > epsilon and gap >= -epsilon then
-                gap = math.max(0, gap)
-                if nearest_gap == nil or gap < nearest_gap - epsilon then
-                    nearest_gap = gap
-                    candidates = { key }
-                elseif math.abs(gap - nearest_gap) <= epsilon then
-                    candidates[#candidates + 1] = key
-                end
-            end
+    local pinned = {}
+    local active_space = total
+    for step = 1, count - 1 do
+        local index = order[step]
+        local share = active_weight > 0 and active_space * weights[index] / active_weight or 0
+        if share < minimum then
+            pinned[index] = true
+            sizes[index] = minimum
+            active_space = active_space - minimum
+            active_weight = active_weight - weights[index]
+        else
+            break
         end
     end
 
-    table.sort(candidates, stable_key_less)
-    return candidates, nearest_gap
+    local unpinned = {}
+    local unpinned_weight = 0
+    for index = 1, count do
+        if not pinned[index] then
+            unpinned[#unpinned + 1] = index
+            unpinned_weight = unpinned_weight + weights[index]
+        end
+    end
+
+    if #unpinned == 0 or unpinned_weight <= 0 then
+        local even = total / count
+        for index = 1, count do
+            sizes[index] = even
+        end
+        return sizes
+    end
+
+    local assigned = 0
+    for position, index in ipairs(unpinned) do
+        if position == #unpinned then
+            sizes[index] = active_space - assigned
+        else
+            local size = active_space * weights[index] / unpinned_weight
+            sizes[index] = size
+            assigned = assigned + size
+        end
+    end
+
+    return sizes
+end
+
+-- Derive world-space tile rectangles from row/cell structure. Rows always span
+-- the full canvas height (weights split it); cells always span the full canvas
+-- width within their row. The canvas starts at world origin (0, 0).
+function Geometry.derive_grid(rows, area, options)
+    options = options or {}
+    local width = math.max(1, area.w)
+    local height = math.max(1, area.h)
+    local min_width = math.max(options.min_width or 0, 0)
+    local min_height = math.max(options.min_height or 0, 0)
+
+    local row_weights = {}
+    for index, row in ipairs(rows) do
+        row_weights[index] = row.height and row.height > 0 and row.height or 1
+    end
+    local row_sizes = Geometry.distribute(row_weights, height, min_height)
+
+    local tiles = {}
+    local y = 0
+    for index, row in ipairs(rows) do
+        local cell_weights = {}
+        for cell_index, cell in ipairs(row.cells) do
+            cell_weights[cell_index] = cell.width and cell.width > 0 and cell.width or 1
+        end
+        local cell_sizes = Geometry.distribute(cell_weights, width, min_width)
+
+        local x = 0
+        for cell_index, cell in ipairs(row.cells) do
+            tiles[cell.key] = {
+                x = x,
+                y = y,
+                w = cell_sizes[cell_index],
+                h = row_sizes[index],
+                present = true,
+            }
+            x = x + cell_sizes[cell_index]
+        end
+
+        y = y + row_sizes[index]
+    end
+
+    return tiles
+end
+
+-- Best-effort horizontal alignment for cross-row insertions: returns the
+-- insertion position (1..count+1) whose resulting left edge is closest to
+-- target_left, using proportional widths as the estimate.
+function Geometry.aligned_cell_index(cells, target_left, area_width)
+    local count = #cells
+    if count == 0 then
+        return 1
+    end
+
+    local weight_total = 0
+    local weights = {}
+    for index, cell in ipairs(cells) do
+        weights[index] = cell.width and cell.width > 0 and cell.width or 1
+        weight_total = weight_total + weights[index]
+    end
+
+    local best_position = 1
+    local best_distance = math.huge
+    local prefix = 0
+    for position = 1, count + 1 do
+        local distance = math.abs(prefix - target_left)
+        if distance < best_distance then
+            best_distance = distance
+            best_position = position
+        end
+        if position <= count then
+            prefix = prefix + area_width * weights[position] / weight_total
+        end
+    end
+
+    return best_position
 end
 
 function Geometry.reveal(viewport, rect, margin)

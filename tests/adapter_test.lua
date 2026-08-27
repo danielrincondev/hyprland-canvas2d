@@ -119,13 +119,13 @@ return function(T)
         local state = grid.engine.workspaces["101"]
         T.near(state.tiles["window:1001"].x, 0)
         T.near(state.tiles["window:1001"].y, 0)
-        T.near(first.placed.x, 1968)
-        T.near(first.placed.y, 78)
+        T.near(first.placed.x, 1920)
+        T.near(first.placed.y, 30)
 
         provider.layout_msg(ctx, "pan right 300")
         provider.recalculate(ctx)
-        T.near(first.placed.x, 1668)
-        T.near(state.viewport.x, 252)
+        T.near(first.placed.x, 1620)
+        T.near(state.viewport.x, 300)
     end)
 
     T.case("adapter spatial focus dispatches the selected window object", function()
@@ -135,8 +135,6 @@ return function(T)
         local ctx = context(owner, { left, right })
         provider.recalculate(ctx)
         local state = grid.engine.workspaces["102"]
-        grid.engine:set_tile("102", "window:2001", { x = 0, y = 0, w = 200, h = 200 })
-        grid.engine:set_tile("102", "window:2002", { x = 250, y = 0, w = 200, h = 200 })
         state.focus_key = "window:2001"
 
         local result = provider.layout_msg(ctx, "focus right")
@@ -146,22 +144,20 @@ return function(T)
         T.truthy(right.window.active)
     end)
 
-    T.case("click focus event minimally reveals an offscreen tiled window", function()
+    T.case("click focus event minimally reveals a panned-offscreen tiled window", function()
         local owner = workspace(103)
         local near = target(3001, false, owner)
         local far = target(3002, true, owner)
         local ctx = context(owner, { near, far }, { x = 0, y = 0, w = 500, h = 400 })
         provider.recalculate(ctx)
         local state = grid.engine.workspaces["103"]
-        grid.engine:set_tile("103", "window:3001", { x = 0, y = 0, w = 200, h = 200 })
-        grid.engine:set_tile("103", "window:3002", { x = 1200, y = 700, w = 200, h = 200 })
-        state.focus_key = "window:3002"
-        state.viewport.x = 0
-        state.viewport.y = 0
+        state.viewport.x = 250 -- pan right so the first window is cut off
+        -- mirror the compositor having already applied click-focus to `near`
+        far.window.active = false
+        near.window.active = true
 
-        handlers["window.active"][1](far.window, 0)
-        T.truthy(state.viewport.x > 800)
-        T.truthy(state.viewport.y > 400)
+        handlers["window.active"][1](near.window, 0)
+        T.near(state.viewport.x, -48) -- margin reveal pulls the view back
     end)
 
     T.case("mixed-layout command falls back outside grid workspaces", function()
@@ -211,6 +207,9 @@ return function(T)
         provider.recalculate(context(owner, { xwayland }, { x = -1280, y = 25, w = 1280, h = 695 }))
         T.truthy(grid.engine.workspaces["-99"].tiles["window:7001"])
         T.truthy(xwayland.placed)
-        T.truthy(xwayland.placed.x > -1280)
+        T.near(xwayland.placed.x, -1280)
+        T.near(xwayland.placed.y, 25)
+        T.near(xwayland.placed.w, 1280)
+        T.near(xwayland.placed.h, 695)
     end)
 end

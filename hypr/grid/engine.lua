@@ -5,9 +5,8 @@ Engine.__index = Engine
 
 local DEFAULTS = {
     layout_name = "grid",
-    tile_width_ratio = 0.50,
-    tile_height_ratio = 0.55,
-    wrap_width_ratio = 2.10,
+    width_presets = { 0.34, 0.50, 0.67, 1.00 },
+    default_width = 0.50,
     min_width = 160,
     min_height = 100,
     pan_step = 300,
@@ -24,9 +23,7 @@ local DEFAULTS = {
 }
 
 local NUMBER_OPTIONS = {
-    tile_width_ratio = { 0.05, 4.00 },
-    tile_height_ratio = { 0.05, 4.00 },
-    wrap_width_ratio = { 0.10, 20.00 },
+    default_width = { 0.000001, 1.00 },
     min_width = { 1, math.huge },
     min_height = { 1, math.huge },
     pan_step = { 0, math.huge },
@@ -58,29 +55,21 @@ local DIRECTION_ALIASES = {
     down = "down",
 }
 
+local CYCLE_DIRECTIONS = {
+    fwd = "forward",
+    forward = "forward",
+    wider = "forward",
+    back = "backward",
+    backward = "backward",
+    narrower = "backward",
+}
+
 local function copy_defaults()
     local config = {}
     for key, value in pairs(DEFAULTS) do
         config[key] = value
     end
     return config
-end
-
-local function copy_rect(rect)
-    return {
-        x = rect.x,
-        y = rect.y,
-        w = rect.w,
-        h = rect.h,
-    }
-end
-
-local function remove_from_order(order, key)
-    for index = #order, 1, -1 do
-        if order[index] == key then
-            table.remove(order, index)
-        end
-    end
 end
 
 local function numeric(value)
@@ -93,6 +82,10 @@ end
 
 local function normalize_direction(direction)
     return direction and DIRECTION_ALIASES[direction:lower()] or nil
+end
+
+local function normalize_cycle(direction)
+    return direction and CYCLE_DIRECTIONS[direction:lower()] or nil
 end
 
 local function tokenize(message)
@@ -134,6 +127,18 @@ local function expand_compound_command(tokens)
         end
         return expanded
     end
+    if command == "cycle-width" or command == "cycle-wider" then
+        return { "cycle", "width", "forward" }
+    end
+    if command == "cycle-narrower" then
+        return { "cycle", "width", "backward" }
+    end
+    if command == "cycle-width-forward" or command == "cycle-width-fwd" then
+        return { "cycle", "width", "forward" }
+    end
+    if command == "cycle-width-backward" or command == "cycle-width-back" then
+        return { "cycle", "width", "backward" }
+    end
     if #tokens == 1 and command == "center-focused" then
         return { "center", "focused" }
     end
@@ -145,6 +150,23 @@ local function expand_compound_command(tokens)
     end
 
     return tokens
+end
+
+local function normalize_width_presets(value)
+    if type(value) ~= "table" or #value < 1 then
+        error("grid option width_presets must be a non-empty array of numbers in (0, 1]", 3)
+    end
+    local presets = {}
+    for index, preset in ipairs(value) do
+        if type(preset) ~= "number" or preset ~= preset or preset <= 0 or preset > 1 then
+            error("grid option width_presets entries must be numbers in (0, 1]", 3)
+        end
+        presets[index] = preset
+    end
+    table.sort(presets, function(a, b)
+        return a < b
+    end)
+    return presets
 end
 
 local function validate_options(options)
@@ -178,6 +200,8 @@ local function validate_options(options)
         config[key] = value
     end
 
+    config.width_presets = normalize_width_presets(config.width_presets)
+
     if config.min_fit_scale > config.max_fit_scale then
         error("grid min_fit_scale must not exceed max_fit_scale", 3)
     end
@@ -206,8 +230,8 @@ function Engine:workspace(workspace_id, area)
                 height = area and area.h or 0,
                 scale = 1,
             },
+            rows = {},
             tiles = {},
-            order = {},
             focus_key = nil,
             insertion = self.config.insertion,
         }
@@ -222,225 +246,326 @@ function Engine:workspace(workspace_id, area)
     return state
 end
 
-function Engine:last_present_key(state)
-    for index = #state.order, 1, -1 do
-        local key = state.order[index]
-        if present(state.tiles[key]) then
-            return key
+function Engine:_locate(state, key)
+    key = tostring(key)
+    for row_index, row in ipairs(state.rows) do
+        for cell_index, cell in ipairs(row.cells) do
+            if cell.key == key then
+                return { row_index = row_index, cell_index = cell_index, row = row, cell = cell }
+            end
         end
     end
     return nil
 end
 
+function Engine:_structural_last_key(state)
+    local row = state.rows[#state.rows]
+    local cell = row and row.cells[#row.cells] or nil
+    return cell and cell.key or nil
+end
+
+function Engine:_anchor_location(state)
+    if state.focus_key then
+        local location = self:_locate(state, state.focus_key)
+        if location then
+            return location
+        end
+    end
+
+    local last_row_index = #state.rows
+    local row = state.rows[last_row_index]
+    if not row or #row.cells == 0 then
+        return nil
+    end
+
+    return {
+        row_index = last_row_index,
+        cell_index = #row.cells,
+        row = row,
+        cell = row.cells[#row.cells],
+    }
+end
+
+function Engine:_remove_cell(state, key)
+    local location = self:_locate(state, key)
+    if not location then
+        return false
+    end
+
+    table.remove(location.row.cells, location.cell_index)
+    if #location.row.cells == 0 then
+        table.remove(state.rows, location.row_index)
+    end
+    return true
+end
+
 function Engine:present_count(state)
     local count = 0
-    for _, tile in pairs(state.tiles) do
-        if present(tile) then
-            count = count + 1
-        end
+    for _, row in ipairs(state.rows) do
+        count = count + #row.cells
     end
     return count
 end
 
-function Engine:_default_size(area)
-    return math.max(self.config.min_width, area.w * self.config.tile_width_ratio),
-        math.max(self.config.min_height, area.h * self.config.tile_height_ratio)
+function Engine:_materialize(state)
+    state.tiles = Geometry.derive_grid(state.rows, {
+        x = 0,
+        y = 0,
+        w = state.viewport.width,
+        h = state.viewport.height,
+    }, {
+        min_width = self.config.min_width,
+        min_height = self.config.min_height,
+    })
+    return state.tiles
 end
 
-function Engine:_push_collisions(state, candidate, direction)
-    local ordered = {}
-    for key, tile in pairs(state.tiles) do
-        if present(tile) then
-            ordered[#ordered + 1] = { key = key, tile = tile }
-        end
+local function make_cell(key)
+    return { key = tostring(key), width = nil }
+end
+
+local function make_row(cell)
+    return { height = 1, cells = { cell } }
+end
+
+local EDGE_ORDER = { right = true, left = true, up = true, down = true }
+
+-- Place a new cell relative to the focused anchor. "right"/"left" insert into
+-- the anchor's own row; "down"/"up" join the adjacent row below/above
+-- (creating it when missing) aligned as closely as possible to the anchor's
+-- left edge.
+function Engine:_insert_new(state, key)
+    local mode = state.insertion == "auto" and "right" or state.insertion
+    local anchor = self:_anchor_location(state)
+    local cell = make_cell(key)
+    cell.width = self.config.default_width
+
+    if not anchor then
+        state.rows[1] = make_row(cell)
+        state.focus_key = cell.key
+        return cell.key
     end
 
-    table.sort(ordered, function(a, b)
-        if direction == "right" then
-            return a.tile.x == b.tile.x and tostring(a.key) < tostring(b.key) or a.tile.x < b.tile.x
-        elseif direction == "left" then
-            local ar = Geometry.right(a.tile)
-            local br = Geometry.right(b.tile)
-            return ar == br and tostring(a.key) < tostring(b.key) or ar > br
-        elseif direction == "down" then
-            return a.tile.y == b.tile.y and tostring(a.key) < tostring(b.key) or a.tile.y < b.tile.y
+    if mode ~= "right" and mode ~= "left" and mode ~= "up" and mode ~= "down" then
+        mode = "right"
+    end
+
+    if mode == "right" then
+        table.insert(anchor.row.cells, anchor.cell_index + 1, cell)
+    elseif mode == "left" then
+        table.insert(anchor.row.cells, anchor.cell_index, cell)
+    else
+        local delta = mode == "down" and 1 or -1
+        local target_row = state.rows[anchor.row_index + delta]
+        local left_edge = 0
+        local anchor_tile = state.tiles and state.tiles[anchor.cell.key]
+        if anchor_tile then
+            left_edge = anchor_tile.x
+        end
+
+        if target_row then
+            local position = Geometry.aligned_cell_index(target_row.cells, left_edge, state.viewport.width)
+            table.insert(target_row.cells, position, cell)
+        elseif delta > 0 then
+            table.insert(state.rows, anchor.row_index + 1, make_row(cell))
         else
-            local ab = Geometry.bottom(a.tile)
-            local bb = Geometry.bottom(b.tile)
-            return ab == bb and tostring(a.key) < tostring(b.key) or ab > bb
-        end
-    end)
-
-    local blockers = { candidate }
-    for _, entry in ipairs(ordered) do
-        local tile = entry.tile
-        local shift = 0
-
-        for _, blocker in ipairs(blockers) do
-            if Geometry.intersects(tile, blocker, self.config.edge_tolerance) then
-                if direction == "right" then
-                    shift = math.max(shift, Geometry.right(blocker) - tile.x)
-                elseif direction == "left" then
-                    shift = math.max(shift, Geometry.right(tile) - blocker.x)
-                elseif direction == "down" then
-                    shift = math.max(shift, Geometry.bottom(blocker) - tile.y)
-                else
-                    shift = math.max(shift, Geometry.bottom(tile) - blocker.y)
-                end
-            end
-        end
-
-        if shift > 0 then
-            if direction == "right" then
-                tile.x = tile.x + shift
-            elseif direction == "left" then
-                tile.x = tile.x - shift
-            elseif direction == "down" then
-                tile.y = tile.y + shift
-            else
-                tile.y = tile.y - shift
-            end
-            blockers[#blockers + 1] = tile
-        end
-    end
-end
-
-function Engine:_auto_insertion_rect(state, anchor, area, width, height)
-    if not anchor then
-        return { x = 0, y = 0, w = width, h = height }, "right"
-    end
-
-    local row_min = anchor.x
-    local row_max = Geometry.right(anchor)
-    for _, tile in pairs(state.tiles) do
-        if present(tile)
-            and Geometry.overlap_1d(anchor.y, Geometry.bottom(anchor), tile.y, Geometry.bottom(tile)) > self.config.edge_tolerance
-        then
-            row_min = math.min(row_min, tile.x)
-            row_max = math.max(row_max, Geometry.right(tile))
+            table.insert(state.rows, 1, make_row(cell))
         end
     end
 
-    local wrap_width = math.max(width, area.w * self.config.wrap_width_ratio)
-    if row_max + width - row_min <= wrap_width + self.config.edge_tolerance then
-        return {
-            x = Geometry.right(anchor),
-            y = anchor.y,
-            w = width,
-            h = anchor.h,
-        }, "right"
+    state.focus_key = cell.key
+    return cell.key
+end-- Horizontal movement reorders within the focused row and wraps at the row
+-- edges. Vertical movement is literal demotion/promotion: the whole window
+-- leaves its row and joins (or creates) the adjacent band below/above.
+function Engine:move(state, direction)
+    local location = self:_anchor_location(state)
+    if not location then
+        return false
     end
 
-    local bounds = Geometry.bounds(state.tiles)
-    return {
-        x = bounds and bounds.x or 0,
-        y = bounds and Geometry.bottom(bounds) or 0,
-        w = width,
-        h = height,
-    }, "down"
-end
+    local rows = state.rows
 
-function Engine:_directional_insertion_rect(anchor, direction, width, height)
-    if direction == "left" then
-        return { x = anchor.x - width, y = anchor.y, w = width, h = anchor.h }
-    elseif direction == "right" then
-        return { x = Geometry.right(anchor), y = anchor.y, w = width, h = anchor.h }
-    elseif direction == "up" then
-        return { x = anchor.x, y = anchor.y - height, w = anchor.w, h = height }
+    if direction == "left" or direction == "right" then
+        local row = location.row
+        if #row.cells < 2 then
+            return false
+        end
+
+        local target_index = location.cell_index + (direction == "left" and -1 or 1)
+        if target_index < 1 then
+            target_index = #row.cells
+        elseif target_index > #row.cells then
+            target_index = 1
+        end
+
+        local moving = table.remove(row.cells, location.cell_index)
+        table.insert(row.cells, target_index, moving)
+        state.focus_key = moving.key
+        return true
+    end
+
+    if direction ~= "up" and direction ~= "down" then
+        return false
+    end
+
+    local delta = direction == "down" and 1 or -1
+    local left_edge = 0
+    local source_tile = state.tiles and state.tiles[location.cell.key]
+    if source_tile then
+        left_edge = source_tile.x
+    end
+
+    local moving = location.cell
+    table.remove(location.row.cells, location.cell_index)
+
+    local removed_source_row = false
+    if #location.row.cells == 0 then
+        table.remove(rows, location.row_index)
+        removed_source_row = true
+    end
+
+    -- Removing the emptied source row shifts every row below it up by one slot,
+    -- so only downward targets need their index corrected; upward targets point
+    -- at rows that never moved.
+    local target_index = location.row_index + delta
+    if removed_source_row and delta > 0 then
+        target_index = target_index - 1
+    end
+    local target_row = rows[target_index]
+
+    if target_row then
+        local position = Geometry.aligned_cell_index(target_row.cells, left_edge, state.viewport.width)
+        table.insert(target_row.cells, position, moving)
+    elseif target_index >= 1 then
+        table.insert(rows, math.min(target_index, #rows + 1), make_row(moving))
     else
-        return { x = anchor.x, y = Geometry.bottom(anchor), w = anchor.w, h = height }
+        table.insert(rows, 1, make_row(moving))
     end
+
+    state.focus_key = moving.key
+    self:_materialize(state)
+    self:reveal(state, moving.key)
+    return true
+end-- Width cycling walks the configured preset list. Cell widths are relative
+-- weights inside their row, so the displayed width can never exceed the screen.
+function Engine:cycle_width(state, direction)
+    local location = self:_anchor_location(state)
+    if not location then
+        return false
+    end
+
+    local presets = self.config.width_presets
+    local current = location.cell.width or self.config.default_width
+
+    local index = 1
+    for position, preset in ipairs(presets) do
+        if math.abs(preset - current) < math.abs(presets[index] - current) then
+            index = position
+        end
+    end
+
+    local next_index = index + (direction == "forward" and 1 or -1)
+    if next_index < 1 then
+        next_index = #presets
+    elseif next_index > #presets then
+        next_index = 1
+    end
+
+    local changed = presets[next_index] ~= current
+    location.cell.width = presets[next_index]
+    return changed
 end
 
-function Engine:_insert_new(state, key, area)
-    local width, height = self:_default_size(area)
-    local anchor_key = present(state.tiles[state.focus_key]) and state.focus_key or self:last_present_key(state)
-    local anchor = anchor_key and state.tiles[anchor_key] or nil
-    local rect
-    local push_direction
+-- Vertical resize transfers height between the focused row and one adjacent
+-- row, clamped so no row falls below min_height. Rows always split the full
+-- work-area height, so unbounded growth is impossible by construction.
+function Engine:resize_rows(state, direction, amount)
+    local rows = state.rows
+    local location = self:_anchor_location(state)
+    if not location or #rows < 2 then
+        return false
+    end
+    if direction ~= "up" and direction ~= "down" then
+        return false
+    end
 
-    if not anchor then
-        rect = { x = 0, y = 0, w = width, h = height }
-        push_direction = "right"
-    elseif state.insertion == "auto" then
-        rect, push_direction = self:_auto_insertion_rect(state, anchor, area, width, height)
+    local grow = amount > 0
+    local desired = math.abs(amount)
+    if desired <= 0 then
+        return false
+    end
+
+    local primary_delta
+    local secondary_delta
+    if grow then
+        primary_delta = direction == "down" and 1 or -1
+        secondary_delta = -primary_delta
     else
-        rect = self:_directional_insertion_rect(anchor, state.insertion, width, height)
-        push_direction = state.insertion
+        primary_delta = direction == "down" and -1 or 1
+        secondary_delta = -primary_delta
     end
 
-    self:_push_collisions(state, rect, push_direction)
-    rect.key = key
-    rect.present = true
-    state.tiles[key] = rect
-    state.order[#state.order + 1] = key
-    state.focus_key = key
-    return rect
+    local donor_index = location.row_index + primary_delta
+    local donor = rows[donor_index]
+    if not donor then
+        donor_index = location.row_index + secondary_delta
+        donor = rows[donor_index]
+    end
+    if not donor then
+        return false
+    end
+
+    local tiles = state.tiles
+    local receiver_tile = tiles and tiles[location.cell.key]
+    local donor_tile = tiles and tiles[donor.cells[#donor.cells].key]
+    if not receiver_tile or not donor_tile then
+        return false
+    end
+
+    local step = math.min(desired, math.max(0, donor_tile.h - self.config.min_height))
+    if step <= 0 then
+        return false
+    end
+
+    local weight_total = 0
+    for _, row in ipairs(rows) do
+        weight_total = weight_total + (row.height and row.height > 0 and row.height or 1)
+    end
+
+    local weight_step = step * weight_total / math.max(1, state.viewport.height)
+    local receiving = location.row
+    receiving.height = (receiving.height and receiving.height > 0 and receiving.height or 1)
+        + (grow and weight_step or -weight_step)
+    donor.height = (donor.height and donor.height > 0 and donor.height or 1)
+        - (grow and weight_step or -weight_step)
+
+    return true
 end
 
-function Engine:sync(workspace_id, descriptors, area)
-    local state = self:workspace(workspace_id, area)
-    local active_key
-    local newly_added = {}
-
-    for _, tile in pairs(state.tiles) do
-        tile.present = false
+function Engine:resize(state, direction, amount)
+    local key = present(state.tiles[state.focus_key]) and state.focus_key or self:_structural_last_key(state)
+    if not key or not Geometry.valid_direction(direction) or amount == 0 then
+        return false
     end
 
-    for _, descriptor in ipairs(descriptors) do
-        local key = tostring(descriptor.key)
-        local tile = state.tiles[key]
-        if tile then
-            tile.present = true
+    local changed
+    if direction == "up" or direction == "down" then
+        changed = self:resize_rows(state, direction, amount)
+    else
+        -- Left/right name the cycling edge; a signed explicit amount may flip it.
+        local cycle_direction = direction == "right" and "forward" or "backward"
+        if amount < 0 then
+            cycle_direction = cycle_direction == "forward" and "backward" or "forward"
         end
-        if descriptor.active then
-            active_key = key
-        end
+        changed = self:cycle_width(state, cycle_direction)
     end
 
-    if not present(state.tiles[state.focus_key]) then
-        state.focus_key = self:last_present_key(state)
+    if changed then
+        self:_materialize(state)
+        self:reveal(state, key)
     end
-
-    for _, descriptor in ipairs(descriptors) do
-        local key = tostring(descriptor.key)
-        if not state.tiles[key] then
-            self:_insert_new(state, key, area)
-            newly_added[key] = true
-        end
-    end
-
-    if active_key and present(state.tiles[active_key]) then
-        state.focus_key = active_key
-    elseif not present(state.tiles[state.focus_key]) then
-        state.focus_key = self:last_present_key(state)
-    end
-
-    if self.config.reveal_new and active_key and newly_added[active_key] then
-        self:reveal(state, active_key)
-    end
-
-    return state, newly_added
-end
-
-function Engine:set_tile(workspace_id, key, rect, present_value)
-    if not rect or not numeric(rect.x) or not numeric(rect.y) or not numeric(rect.w) or not numeric(rect.h) then
-        error("set_tile expects a numeric rectangle", 2)
-    end
-    if rect.w < self.config.min_width or rect.h < self.config.min_height then
-        error("set_tile rectangle is below configured minimum size", 2)
-    end
-
-    local state = self:workspace(workspace_id)
-    key = tostring(key)
-    if not state.tiles[key] then
-        state.order[#state.order + 1] = key
-    end
-    state.tiles[key] = copy_rect(rect)
-    state.tiles[key].key = key
-    state.tiles[key].present = present_value ~= false
-    state.focus_key = state.focus_key or key
-    return state.tiles[key]
+    return changed
 end
 
 function Engine:world_viewport(state)
@@ -541,7 +666,7 @@ function Engine:reset_viewport(state)
 end
 
 function Engine:focus(state, direction)
-    local current = present(state.tiles[state.focus_key]) and state.focus_key or self:last_present_key(state)
+    local current = present(state.tiles[state.focus_key]) and state.focus_key or self:_structural_last_key(state)
     if not current then
         return nil
     end
@@ -559,165 +684,59 @@ function Engine:focus(state, direction)
     return next_key
 end
 
-function Engine:move(state, direction)
-    local current = present(state.tiles[state.focus_key]) and state.focus_key or self:last_present_key(state)
-    if not current then
-        return false
-    end
+function Engine:sync(workspace_id, descriptors, area)
+    local state = self:workspace(workspace_id, area)
+    local wanted = {}
+    local active_key
 
-    local neighbor = Geometry.directional_neighbor(state.tiles, current, direction, {
-        epsilon = self.config.edge_tolerance,
-        diagonal_weight = self.config.diagonal_weight,
-    })
-    if not neighbor then
-        return false
-    end
-
-    local current_rect = copy_rect(state.tiles[current])
-    local neighbor_rect = copy_rect(state.tiles[neighbor])
-    state.tiles[current].x = neighbor_rect.x
-    state.tiles[current].y = neighbor_rect.y
-    state.tiles[current].w = neighbor_rect.w
-    state.tiles[current].h = neighbor_rect.h
-    state.tiles[neighbor].x = current_rect.x
-    state.tiles[neighbor].y = current_rect.y
-    state.tiles[neighbor].w = current_rect.w
-    state.tiles[neighbor].h = current_rect.h
-    self:reveal(state, current)
-    return true
-end
-
-function Engine:_apply_positive_resize(state, key, direction, amount)
-    local tile = state.tiles[key]
-    local neighbors, gap = Geometry.edge_candidates(state.tiles, key, direction, self.config.edge_tolerance)
-
-    if #neighbors == 0 then
-        gap = amount
-    end
-
-    local available = math.huge
-    if #neighbors > 0 then
-        for _, neighbor_key in ipairs(neighbors) do
-            local neighbor = state.tiles[neighbor_key]
-            local size = (direction == "left" or direction == "right") and neighbor.w or neighbor.h
-            local minimum = (direction == "left" or direction == "right") and self.config.min_width or self.config.min_height
-            available = math.min(available, math.max(0, size - minimum))
+    for _, descriptor in ipairs(descriptors) do
+        local key = tostring(descriptor.key)
+        wanted[key] = true
+        if descriptor.active then
+            active_key = key
         end
     end
 
-    local total = math.min(amount, (gap or 0) + available)
-    if #neighbors == 0 then
-        total = amount
-    end
-    if total <= 0 then
-        return false
-    end
-
-    local steal = #neighbors > 0 and math.max(0, total - (gap or 0)) or 0
-    if direction == "right" then
-        tile.w = tile.w + total
-        for _, neighbor_key in ipairs(neighbors) do
-            local neighbor = state.tiles[neighbor_key]
-            neighbor.x = neighbor.x + steal
-            neighbor.w = neighbor.w - steal
+    -- Structural removal. Departed targets are deleted from their rows; because
+    -- all placement is derived afterwards, survivors automatically become
+    -- neighbors instead of leaving holes behind.
+    for row_index = #state.rows, 1, -1 do
+        local row = state.rows[row_index]
+        for cell_index = #row.cells, 1, -1 do
+            if not wanted[row.cells[cell_index].key] then
+                table.remove(row.cells, cell_index)
+            end
         end
-    elseif direction == "left" then
-        tile.x = tile.x - total
-        tile.w = tile.w + total
-        for _, neighbor_key in ipairs(neighbors) do
-            state.tiles[neighbor_key].w = state.tiles[neighbor_key].w - steal
-        end
-    elseif direction == "down" then
-        tile.h = tile.h + total
-        for _, neighbor_key in ipairs(neighbors) do
-            local neighbor = state.tiles[neighbor_key]
-            neighbor.y = neighbor.y + steal
-            neighbor.h = neighbor.h - steal
-        end
-    else
-        tile.y = tile.y - total
-        tile.h = tile.h + total
-        for _, neighbor_key in ipairs(neighbors) do
-            state.tiles[neighbor_key].h = state.tiles[neighbor_key].h - steal
+        if #row.cells == 0 then
+            table.remove(state.rows, row_index)
         end
     end
 
-    return true
-end
-
-function Engine:_apply_negative_resize(state, key, direction, amount)
-    local tile = state.tiles[key]
-    local horizontal = direction == "left" or direction == "right"
-    local size = horizontal and tile.w or tile.h
-    local minimum = horizontal and self.config.min_width or self.config.min_height
-    local shrink = math.min(amount, math.max(0, size - minimum))
-    if shrink <= 0 then
-        return false
-    end
-
-    local neighbors, gap = Geometry.edge_candidates(state.tiles, key, direction, self.config.edge_tolerance)
-    local touching = gap ~= nil and gap <= self.config.edge_tolerance
-    if not touching then
-        neighbors = {}
-    end
-
-    if direction == "right" then
-        tile.w = tile.w - shrink
-        for _, neighbor_key in ipairs(neighbors) do
-            local neighbor = state.tiles[neighbor_key]
-            neighbor.x = neighbor.x - shrink
-            neighbor.w = neighbor.w + shrink
-        end
-    elseif direction == "left" then
-        tile.x = tile.x + shrink
-        tile.w = tile.w - shrink
-        for _, neighbor_key in ipairs(neighbors) do
-            state.tiles[neighbor_key].w = state.tiles[neighbor_key].w + shrink
-        end
-    elseif direction == "down" then
-        tile.h = tile.h - shrink
-        for _, neighbor_key in ipairs(neighbors) do
-            local neighbor = state.tiles[neighbor_key]
-            neighbor.y = neighbor.y - shrink
-            neighbor.h = neighbor.h + shrink
-        end
-    else
-        tile.y = tile.y + shrink
-        tile.h = tile.h - shrink
-        for _, neighbor_key in ipairs(neighbors) do
-            state.tiles[neighbor_key].h = state.tiles[neighbor_key].h + shrink
+    -- Insert newcomers relative to the current focus.
+    local newly_added = {}
+    for _, descriptor in ipairs(descriptors) do
+        local key = tostring(descriptor.key)
+        if not self:_locate(state, key) then
+            self:_insert_new(state, key)
+            newly_added[key] = true
         end
     end
 
-    return true
-end
-
-function Engine:resize(state, direction, amount)
-    local key = present(state.tiles[state.focus_key]) and state.focus_key or self:last_present_key(state)
-    if not key or not Geometry.valid_direction(direction) or amount == 0 then
-        return false
+    -- Focus resolution: the active window wins, otherwise keep a valid focus,
+    -- otherwise fall back to the structurally last cell.
+    if active_key and self:_locate(state, active_key) then
+        state.focus_key = active_key
+    elseif not self:_locate(state, state.focus_key or "\0") then
+        state.focus_key = self:_structural_last_key(state)
     end
 
-    local changed
-    if amount > 0 then
-        changed = self:_apply_positive_resize(state, key, direction, amount)
-    else
-        changed = self:_apply_negative_resize(state, key, direction, -amount)
+    self:_materialize(state)
+
+    if self.config.reveal_new and active_key and newly_added[active_key] then
+        self:reveal(state, active_key)
     end
 
-    if changed then
-        self:reveal(state, key)
-    end
-    return changed
-end
-
-function Engine:set_insertion(state, mode)
-    if not INSERTION_MODES[mode] then
-        return false
-    end
-    local changed = state.insertion ~= mode
-    state.insertion = mode
-    return changed
+    return state, newly_added
 end
 
 function Engine:command(state, message)
@@ -751,10 +770,16 @@ function Engine:command(state, message)
     elseif command == "resize" then
         local direction = normalize_direction(tokens[2])
         local amount = tokens[3] and tonumber(tokens[3]) or self.config.resize_step
-        if not direction or not numeric(amount) then
-            return nil, "grid: resize expects a direction and optional signed numeric amount"
+        if not direction or not numeric(amount) or amount == 0 then
+            return nil, "grid: resize expects up/down with an optional signed amount, or left/right to cycle width"
         end
         return { changed = self:resize(state, direction, amount) }
+    elseif command == "cycle" then
+        if tokens[2] ~= nil and tokens[2] ~= "width" then
+            return nil, "grid: cycle expects width forward or backward"
+        end
+        local direction = normalize_cycle(tokens[3]) or "forward"
+        return { changed = self:cycle_width(state, direction) }
     elseif command == "insert" then
         local mode = tokens[2] and normalize_direction(tokens[2]) or nil
         if tokens[2] == "auto" then
@@ -777,17 +802,25 @@ function Engine:command(state, message)
     return nil, "grid: unknown layout message: " .. tostring(message)
 end
 
+function Engine:set_insertion(state, mode)
+    if not INSERTION_MODES[mode] then
+        return false
+    end
+    local changed = state.insertion ~= mode
+    state.insertion = mode
+    return changed
+end
+
 function Engine:forget_window(key, keep_workspace_id)
     key = tostring(key)
     keep_workspace_id = keep_workspace_id and tostring(keep_workspace_id) or nil
 
     for workspace_id, state in pairs(self.workspaces) do
-        if workspace_id ~= keep_workspace_id and state.tiles[key] then
-            state.tiles[key] = nil
-            remove_from_order(state.order, key)
+        if workspace_id ~= keep_workspace_id and self:_remove_cell(state, key) then
             if state.focus_key == key then
-                state.focus_key = self:last_present_key(state)
+                state.focus_key = self:_structural_last_key(state)
             end
+            self:_materialize(state)
         end
     end
 end
@@ -805,20 +838,29 @@ function Engine:prune_workspaces(live_workspace_ids)
 end
 
 function Engine:validate(state)
-    for key, tile in pairs(state.tiles) do
-        if present(tile) then
-            if not numeric(tile.x) or not numeric(tile.y) or not numeric(tile.w) or not numeric(tile.h) then
-                return false, "tile " .. tostring(key) .. " has non-finite geometry"
-            end
-            if tile.w < self.config.min_width - self.config.edge_tolerance then
-                return false, "tile " .. tostring(key) .. " is below minimum width"
-            end
-            if tile.h < self.config.min_height - self.config.edge_tolerance then
-                return false, "tile " .. tostring(key) .. " is below minimum height"
+    for key, tile in pairs(state.tiles or {}) do
+        if not numeric(tile.x) or not numeric(tile.y) or not numeric(tile.w) or not numeric(tile.h) then
+            return false, "tile " .. tostring(key) .. " has non-finite geometry"
+        end
+        if tile.w <= 0 or tile.h <= 0 then
+            return false, "tile " .. tostring(key) .. " has non-positive size"
+        end
+    end
+
+    for _, row in ipairs(state.rows) do
+        for _, cell in ipairs(row.cells) do
+            if not state.tiles[cell.key] then
+                return false, "cell " .. tostring(cell.key) .. " has no derived tile"
             end
         end
     end
-    return Geometry.assert_non_overlapping(state.tiles, self.config.edge_tolerance)
+
+    local non_overlapping, reason = Geometry.assert_non_overlapping(state.tiles or {}, self.config.edge_tolerance)
+    if not non_overlapping then
+        return false, reason
+    end
+
+    return true
 end
 
 Engine.defaults = DEFAULTS

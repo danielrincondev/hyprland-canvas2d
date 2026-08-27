@@ -1,9 +1,10 @@
 -- Copy hypr/grid to ~/.config/hypr/grid, then load this after
 -- Omarchy/default Hyprland configuration and before any conflicting binds.
 local grid = require("grid").setup({
-    tile_width_ratio = 0.50,
-    tile_height_ratio = 0.55,
-    wrap_width_ratio = 2.10,
+    -- Relative width presets cycled by Super+Alt+Left/Right. Displayed width
+    -- is each cell's weight relative to row siblings, clamped to the screen.
+    width_presets = { 0.34, 0.50, 0.67, 1.00 },
+    default_width = 0.50,
     pan_step = 300,
     resize_step = 60,
     viewport_margin = 48,
@@ -49,8 +50,10 @@ for key, direction in pairs(vim_directions) do
         { repeating = true }
     )
 
-    -- Swap the focused tile's world rectangle with its spatial neighbor.
-    -- The fallback keeps this binding useful on dwindle/scrolling/monocle.
+    -- Horizontal moves reorder within the focused row (wrapping at its edges);
+    -- vertical moves push/pull the whole window into the row below/above,
+    -- creating that band when missing. The fallback keeps this binding useful
+    -- on dwindle/scrolling/monocle.
     hl.bind(
         "SUPER + SHIFT + " .. key,
         grid.command(
@@ -59,7 +62,8 @@ for key, direction in pairs(vim_directions) do
         )
     )
 
-    -- Move the named edge and resize directly adjacent tiles with it.
+    -- Up/down transfer height between neighbor rows, clamped at min_height;
+    -- left/right cycle width through width_presets without exceeding the screen.
     hl.bind(
         "SUPER + ALT + " .. key,
         grid.command("resize " .. direction),
