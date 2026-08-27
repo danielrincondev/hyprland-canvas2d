@@ -1,4 +1,4 @@
-local Geometry = require("canvas2d.geometry")
+local Geometry = require("grid.geometry")
 
 return function(T)
     T.case("spatial focus prefers perpendicular overlap", function()
@@ -63,7 +63,7 @@ return function(T)
         T.near(y, -100)
     end)
 
-    T.case("canvas bounds retain negative world coordinates", function()
+    T.case("grid bounds retain negative world coordinates", function()
         local bounds = Geometry.bounds({
             a = { x = -500, y = -200, w = 100, h = 100 },
             b = { x = 250, y = 300, w = 50, h = 75 },

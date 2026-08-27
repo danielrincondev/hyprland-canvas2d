@@ -2,7 +2,7 @@
 
 ## Boundary
 
-`hyprland-canvas2d` is a Hyprland 0.56 Lua tiled-layout provider. It owns tiled world geometry and viewport state. Hyprland continues to own:
+`hyprland-grid` is a Hyprland 0.56 Lua tiled-layout provider. It owns tiled world geometry and viewport state. Hyprland continues to own:
 
 - window and group targets;
 - monitor/work-area discovery, including reserved layer-shell areas;
@@ -15,7 +15,7 @@ The adapter uses only public/current Lua facilities. It does not hook compositor
 ## Modules
 
 ```text
-hypr/canvas2d/
+hypr/grid/
 ├── init.lua       Hyprland provider, event subscriptions, dispatcher adapter
 ├── engine.lua     workspace state, insertion, commands, lifecycle, resize
 └── geometry.lua   rectangle predicates, bounds, neighbors, reveal heuristic
@@ -187,7 +187,7 @@ This supports non-aligned split neighbors, such as one tall tile adjacent to two
 - **Monitor move/resolution/scale:** the next `ctx.area` updates viewport screen dimensions and global placement offset.
 - **Floating/pinned:** not supplied to the tiled algorithm. A temporarily absent stable target keeps a parked rectangle; pinned windows therefore remain outside the canvas.
 - **Fullscreen/maximized:** the default Hyprland fullscreen handler overrides visible target geometry while fullscreen. The stored world rectangle is not mutated.
-- **Special workspace:** works when assigned `layout = "lua:canvas2d"`; Hyprland applies its special-workspace visual scale after target placement.
+- **Special workspace:** works when assigned `layout = "lua:grid"`; Hyprland applies its special-workspace visual scale after target placement.
 - **XWayland:** no separate path. Hyprland's window target handles protocol coordinates after layout placement.
 - **Transient dialog:** floating dialogs are excluded. Forced-tiled dialogs are ordinary targets because transient relationships are not exposed in the layout context.
 - **Groups:** one target/rectangle. Lua exposes the current group window and group object but no stable layout-target identifier; group topology changes can cause deterministic reinsertion.

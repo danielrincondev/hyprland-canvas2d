@@ -1,5 +1,5 @@
-local Engine = require("canvas2d.engine")
-local Geometry = require("canvas2d.geometry")
+local Engine = require("grid.engine")
+local Geometry = require("grid.geometry")
 
 local AREA = { x = 0, y = 0, w = 1000, h = 800 }
 
@@ -40,7 +40,7 @@ return function(T)
         T.equal(state.focus_key, "1")
     end)
 
-    T.case("many-window insertion creates a two-dimensional canvas", function()
+    T.case("many-window insertion creates a two-dimensional grid", function()
         local engine = new_engine()
         local state = engine:sync("1", descriptors(25, 25), AREA)
         local bounds = Geometry.bounds(state.tiles)
@@ -163,7 +163,7 @@ return function(T)
         T.truthy(engine:validate(state))
     end)
 
-    T.case("workspace canvas and viewport state are independent", function()
+    T.case("workspace grid and viewport state are independent", function()
         local engine = new_engine()
         local first = engine:sync("1", descriptors(3, 3), AREA)
         local second = engine:sync("5", descriptors(2, 2), AREA)

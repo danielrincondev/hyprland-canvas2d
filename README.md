@@ -1,4 +1,4 @@
-# hyprland-canvas2d
+# hyprland-grid
 
 A two-dimensional scrolling layout for Hyprland. Each configured workspace owns a flat set of world-space tile rectangles and an independent viewport. Tiles may exist outside the monitor, including at negative coordinates; the monitor shows only the translated portion of that canvas.
 
@@ -65,8 +65,8 @@ The implementation reuses Hyprland's official target placement, work-area calcul
 No compiler, plugin ABI, or `hyprpm` package is involved.
 
 ```sh
-git clone https://github.com/danielrincondev/hyprland-canvas2d.git
-cd hyprland-canvas2d
+git clone https://github.com/danielrincondev/hyprland-grid.git
+cd hyprland-grid
 make test
 make install
 ```
@@ -74,19 +74,19 @@ make install
 `make install` copies the Lua package to:
 
 ```text
-${XDG_CONFIG_HOME:-$HOME/.config}/hypr/canvas2d/
+${XDG_CONFIG_HOME:-$HOME/.config}/hypr/grid/
 ```
 
 Then load and configure it from `~/.config/hypr/hyprland.lua` (after the normal Omarchy/default configuration is loaded):
 
 ```lua
-local canvas = require("canvas2d").setup({
+local grid = require("grid").setup({
     pan_step = 300,
     resize_step = 60,
     viewport_margin = 48,
 })
 
-hl.workspace_rule({ workspace = "1", layout = canvas.layout })
+hl.workspace_rule({ workspace = "1", layout = grid.layout })
 hl.workspace_rule({ workspace = "2", layout = "scrolling" })
 hl.workspace_rule({ workspace = "3", layout = "dwindle" })
 hl.workspace_rule({ workspace = "4", layout = "monocle" })
@@ -109,7 +109,7 @@ hyprctl configerrors
 
 ## Layout messages
 
-Use these through `hl.dsp.layout("...")` or `canvas.command("...")`. For a live one-off command on Hyprland 0.56, use `hyprctl eval 'hl.dispatch(hl.dsp.layout("pan right 300"))'`.
+Use these through `hl.dsp.layout("...")` or `grid.command("...")`. For a live one-off command on Hyprland 0.56, use `hyprctl eval 'hl.dispatch(hl.dsp.layout("pan right 300"))'`.
 
 | Message | Behavior |
 |---|---|
@@ -127,16 +127,16 @@ Hyphenated forms such as `focus-left`, `move-window-down`, `center-focused`, `fi
 
 ### Mixed-layout bindings
 
-`canvas.command(message, fallback)` returns a Lua keybinding function. It sends the canvas message only when the active workspace uses `lua:canvas2d`; otherwise it invokes the supplied normal Hyprland dispatcher.
+`grid.command(message, fallback)` returns a Lua keybinding function. It sends the grid message only when the active workspace uses `lua:grid`; otherwise it invokes the supplied normal Hyprland dispatcher.
 
 ```lua
-hl.bind("SUPER + H", canvas.command(
+hl.bind("SUPER + H", grid.command(
     "focus left",
     hl.dsp.focus({ direction = "left" })
 ))
 
-hl.bind("SUPER + CTRL + H", canvas.command("pan left"), { repeating = true })
-hl.bind("SUPER + SHIFT + H", canvas.command(
+hl.bind("SUPER + CTRL + H", grid.command("pan left"), { repeating = true })
+hl.bind("SUPER + SHIFT + H", grid.command(
     "move left",
     hl.dsp.window.move({ direction = "left" })
 ))
@@ -169,7 +169,7 @@ Resize finds the nearest set of rectangles that overlap the focused tile on the 
 | `insertion` | `"auto"` | Initial per-workspace insertion mode. |
 | `auto_reveal` | `true` | Reveal tiled windows focused by clicks/default dispatchers. |
 | `reveal_new` | `true` | Reveal a newly focused tile after insertion. |
-| `layout_name` | `"canvas2d"` | Registered Lua layout name. |
+| `layout_name` | `"grid"` | Registered Lua layout name. |
 
 Unknown or invalid options fail during config loading rather than being silently ignored.
 

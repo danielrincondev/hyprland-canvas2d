@@ -1,6 +1,6 @@
-local Engine = require("canvas2d.engine")
+local Engine = require("grid.engine")
 
-local Canvas2D = {}
+local Grid = {}
 local active_api
 
 local function target_key(target)
@@ -56,12 +56,12 @@ local function workspace_uses_layout(workspace, layout_name)
     return workspace and workspace.tiled_layout == layout_name
 end
 
-function Canvas2D.setup(options)
+function Grid.setup(options)
     if active_api then
         return active_api
     end
     if not hl or not hl.layout or not hl.layout.register then
-        error("canvas2d requires Hyprland 0.55 or newer with hl.layout.register", 2)
+        error("grid requires Hyprland 0.55 or newer with hl.layout.register", 2)
     end
 
     local engine = Engine.new(options)
@@ -104,7 +104,7 @@ function Canvas2D.setup(options)
                     end)
                     suppress_auto_reveal = false
                     if not ok then
-                        return "canvas2d: failed to focus spatial neighbor: " .. tostring(dispatch_error)
+                        return "grid: failed to focus spatial neighbor: " .. tostring(dispatch_error)
                     end
                 end
             end
@@ -199,4 +199,4 @@ function Canvas2D.setup(options)
     return api
 end
 
-return Canvas2D
+return Grid

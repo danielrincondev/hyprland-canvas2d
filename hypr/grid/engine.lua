@@ -1,10 +1,10 @@
-local Geometry = require("canvas2d.geometry")
+local Geometry = require("grid.geometry")
 
 local Engine = {}
 Engine.__index = Engine
 
 local DEFAULTS = {
-    layout_name = "canvas2d",
+    layout_name = "grid",
     tile_width_ratio = 0.50,
     tile_height_ratio = 0.55,
     wrap_width_ratio = 2.10,
@@ -153,25 +153,25 @@ local function validate_options(options)
 
     for key, value in pairs(options) do
         if config[key] == nil then
-            error("unknown canvas2d option: " .. tostring(key), 3)
+            error("unknown grid option: " .. tostring(key), 3)
         end
 
         if NUMBER_OPTIONS[key] then
             local range = NUMBER_OPTIONS[key]
             if not numeric(value) or value < range[1] or value > range[2] then
-                error(string.format("canvas2d option %s must be a number in [%s, %s]", key, range[1], range[2]), 3)
+                error(string.format("grid option %s must be a number in [%s, %s]", key, range[1], range[2]), 3)
             end
         elseif key == "layout_name" then
             if type(value) ~= "string" or value == "" or value:find("%s") then
-                error("canvas2d option layout_name must be a non-empty name without whitespace", 3)
+                error("grid option layout_name must be a non-empty name without whitespace", 3)
             end
         elseif key == "insertion" then
             if type(value) ~= "string" or not INSERTION_MODES[value] then
-                error("canvas2d option insertion must be auto, left, right, up, or down", 3)
+                error("grid option insertion must be auto, left, right, up, or down", 3)
             end
         elseif key == "auto_reveal" or key == "reveal_new" then
             if type(value) ~= "boolean" then
-                error("canvas2d option " .. key .. " must be boolean", 3)
+                error("grid option " .. key .. " must be boolean", 3)
             end
         end
 
@@ -179,7 +179,7 @@ local function validate_options(options)
     end
 
     if config.min_fit_scale > config.max_fit_scale then
-        error("canvas2d min_fit_scale must not exceed max_fit_scale", 3)
+        error("grid min_fit_scale must not exceed max_fit_scale", 3)
     end
 
     return config
@@ -725,13 +725,13 @@ function Engine:command(state, message)
     local command = tokens[1]
 
     if not command then
-        return nil, "canvas2d: empty layout message"
+        return nil, "grid: empty layout message"
     end
 
     if command == "focus" then
         local direction = normalize_direction(tokens[2])
         if not direction then
-            return nil, "canvas2d: focus expects left, right, up, or down"
+            return nil, "grid: focus expects left, right, up, or down"
         end
         local key = self:focus(state, direction)
         return { changed = key ~= nil, focus_key = key }
@@ -739,20 +739,20 @@ function Engine:command(state, message)
         local direction = normalize_direction(tokens[2])
         local amount = tokens[3] and tonumber(tokens[3]) or self.config.pan_step
         if not direction or not numeric(amount) then
-            return nil, "canvas2d: pan expects a direction and optional numeric amount"
+            return nil, "grid: pan expects a direction and optional numeric amount"
         end
         return { changed = self:pan(state, direction, amount) }
     elseif command == "move" or command == "swap" then
         local direction = normalize_direction(tokens[2])
         if not direction then
-            return nil, "canvas2d: move expects left, right, up, or down"
+            return nil, "grid: move expects left, right, up, or down"
         end
         return { changed = self:move(state, direction) }
     elseif command == "resize" then
         local direction = normalize_direction(tokens[2])
         local amount = tokens[3] and tonumber(tokens[3]) or self.config.resize_step
         if not direction or not numeric(amount) then
-            return nil, "canvas2d: resize expects a direction and optional signed numeric amount"
+            return nil, "grid: resize expects a direction and optional signed numeric amount"
         end
         return { changed = self:resize(state, direction, amount) }
     elseif command == "insert" then
@@ -761,7 +761,7 @@ function Engine:command(state, message)
             mode = "auto"
         end
         if not mode then
-            return nil, "canvas2d: insert expects auto, left, right, up, or down"
+            return nil, "grid: insert expects auto, left, right, up, or down"
         end
         return { changed = self:set_insertion(state, mode) }
     elseif command == "center" and (tokens[2] == nil or tokens[2] == "focused") then
@@ -774,7 +774,7 @@ function Engine:command(state, message)
         return { changed = self:reveal(state, state.focus_key) }
     end
 
-    return nil, "canvas2d: unknown layout message: " .. tostring(message)
+    return nil, "grid: unknown layout message: " .. tostring(message)
 end
 
 function Engine:forget_window(key, keep_workspace_id)

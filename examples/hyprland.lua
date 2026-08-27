@@ -1,6 +1,6 @@
--- Copy hypr/canvas2d to ~/.config/hypr/canvas2d, then load this after
+-- Copy hypr/grid to ~/.config/hypr/grid, then load this after
 -- Omarchy/default Hyprland configuration and before any conflicting binds.
-local canvas = require("canvas2d").setup({
+local grid = require("grid").setup({
     tile_width_ratio = 0.50,
     tile_height_ratio = 0.55,
     wrap_width_ratio = 2.10,
@@ -12,7 +12,7 @@ local canvas = require("canvas2d").setup({
 })
 
 -- Hyprland 0.56 workspace-specific layout rules.
-hl.workspace_rule({ workspace = "1", layout = canvas.layout })
+hl.workspace_rule({ workspace = "1", layout = grid.layout })
 hl.workspace_rule({ workspace = "2", layout = "scrolling" })
 hl.workspace_rule({ workspace = "3", layout = "dwindle" })
 hl.workspace_rule({ workspace = "4", layout = "monocle" })
@@ -33,10 +33,10 @@ for key, direction in pairs(vim_directions) do
     hl.unbind("SUPER + SHIFT + " .. key)
     hl.unbind("SUPER + ALT + " .. key)
 
-    -- Spatial focus on canvas workspaces; normal Hyprland focus elsewhere.
+    -- Spatial focus on grid workspaces; normal Hyprland focus elsewhere.
     hl.bind(
         "SUPER + " .. key,
-        canvas.command(
+        grid.command(
             "focus " .. direction,
             hl.dsp.focus({ direction = direction })
         )
@@ -45,7 +45,7 @@ for key, direction in pairs(vim_directions) do
     -- Viewport-only movement. Hold to repeat.
     hl.bind(
         "SUPER + CTRL + " .. key,
-        canvas.command("pan " .. direction),
+        grid.command("pan " .. direction),
         { repeating = true }
     )
 
@@ -53,7 +53,7 @@ for key, direction in pairs(vim_directions) do
     -- The fallback keeps this binding useful on dwindle/scrolling/monocle.
     hl.bind(
         "SUPER + SHIFT + " .. key,
-        canvas.command(
+        grid.command(
             "move " .. direction,
             hl.dsp.window.move({ direction = direction })
         )
@@ -62,19 +62,19 @@ for key, direction in pairs(vim_directions) do
     -- Move the named edge and resize directly adjacent tiles with it.
     hl.bind(
         "SUPER + ALT + " .. key,
-        canvas.command("resize " .. direction),
+        grid.command("resize " .. direction),
         { repeating = true }
     )
 end
 
 -- Viewport utilities. Change these keys freely.
-hl.bind("SUPER + CTRL + C", canvas.command("center focused"))
-hl.bind("SUPER + CTRL + F", canvas.command("fit all"))
-hl.bind("SUPER + CTRL + R", canvas.command("reset viewport"))
+hl.bind("SUPER + CTRL + C", grid.command("center focused"))
+hl.bind("SUPER + CTRL + F", grid.command("fit all"))
+hl.bind("SUPER + CTRL + R", grid.command("reset viewport"))
 
 -- Per-workspace insertion policy for subsequently opened tiled windows.
-hl.bind("SUPER + CTRL + A", canvas.command("insert auto"))
-hl.bind("SUPER + CTRL + LEFT", canvas.command("insert left"))
-hl.bind("SUPER + CTRL + RIGHT", canvas.command("insert right"))
-hl.bind("SUPER + CTRL + UP", canvas.command("insert up"))
-hl.bind("SUPER + CTRL + DOWN", canvas.command("insert down"))
+hl.bind("SUPER + CTRL + A", grid.command("insert auto"))
+hl.bind("SUPER + CTRL + LEFT", grid.command("insert left"))
+hl.bind("SUPER + CTRL + RIGHT", grid.command("insert right"))
+hl.bind("SUPER + CTRL + UP", grid.command("insert up"))
+hl.bind("SUPER + CTRL + DOWN", grid.command("insert down"))

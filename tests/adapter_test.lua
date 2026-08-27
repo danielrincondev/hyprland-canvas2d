@@ -10,7 +10,7 @@ return function(T)
     local function workspace(id, layout)
         local value = {
             id = id,
-            tiled_layout = layout or "lua:canvas2d",
+            tiled_layout = layout or "lua:grid",
         }
         workspaces[tostring(id)] = value
         return value
@@ -97,16 +97,16 @@ return function(T)
         end,
     }
 
-    package.loaded["canvas2d"] = nil
-    package.loaded["canvas2d.init"] = nil
-    local canvas = require("canvas2d").setup({
+    package.loaded["grid"] = nil
+    package.loaded["grid.init"] = nil
+    local grid = require("grid").setup({
         min_width = 50,
         min_height = 40,
     })
 
     T.case("adapter registers the current Lua custom layout API", function()
-        T.equal(registered_name, "canvas2d")
-        T.equal(canvas.layout, "lua:canvas2d")
+        T.equal(registered_name, "grid")
+        T.equal(grid.layout, "lua:grid")
         T.truthy(provider.recalculate)
         T.truthy(provider.layout_msg)
     end)
@@ -116,7 +116,7 @@ return function(T)
         local first = target(1001, true, owner)
         local ctx = context(owner, { first }, { x = 1920, y = 30, w = 1000, h = 800 })
         provider.recalculate(ctx)
-        local state = canvas.engine.workspaces["101"]
+        local state = grid.engine.workspaces["101"]
         T.near(state.tiles["window:1001"].x, 0)
         T.near(state.tiles["window:1001"].y, 0)
         T.near(first.placed.x, 1968)
@@ -134,9 +134,9 @@ return function(T)
         local right = target(2002, false, owner)
         local ctx = context(owner, { left, right })
         provider.recalculate(ctx)
-        local state = canvas.engine.workspaces["102"]
-        canvas.engine:set_tile("102", "window:2001", { x = 0, y = 0, w = 200, h = 200 })
-        canvas.engine:set_tile("102", "window:2002", { x = 250, y = 0, w = 200, h = 200 })
+        local state = grid.engine.workspaces["102"]
+        grid.engine:set_tile("102", "window:2001", { x = 0, y = 0, w = 200, h = 200 })
+        grid.engine:set_tile("102", "window:2002", { x = 250, y = 0, w = 200, h = 200 })
         state.focus_key = "window:2001"
 
         local result = provider.layout_msg(ctx, "focus right")
@@ -152,9 +152,9 @@ return function(T)
         local far = target(3002, true, owner)
         local ctx = context(owner, { near, far }, { x = 0, y = 0, w = 500, h = 400 })
         provider.recalculate(ctx)
-        local state = canvas.engine.workspaces["103"]
-        canvas.engine:set_tile("103", "window:3001", { x = 0, y = 0, w = 200, h = 200 })
-        canvas.engine:set_tile("103", "window:3002", { x = 1200, y = 700, w = 200, h = 200 })
+        local state = grid.engine.workspaces["103"]
+        grid.engine:set_tile("103", "window:3001", { x = 0, y = 0, w = 200, h = 200 })
+        grid.engine:set_tile("103", "window:3002", { x = 1200, y = 700, w = 200, h = 200 })
         state.focus_key = "window:3002"
         state.viewport.x = 0
         state.viewport.y = 0
@@ -164,13 +164,13 @@ return function(T)
         T.truthy(state.viewport.y > 400)
     end)
 
-    T.case("mixed-layout command falls back outside canvas workspaces", function()
+    T.case("mixed-layout command falls back outside grid workspaces", function()
         local fallback = { kind = "fallback" }
-        local command = canvas.command("focus left", fallback)
-        local canvas_workspace = workspace(104, "lua:canvas2d")
+        local command = grid.command("focus left", fallback)
+        local grid_workspace = workspace(104, "lua:grid")
         local normal_workspace = workspace(105, "dwindle")
-        local first = target(4001, true, canvas_workspace)
-        context(canvas_workspace, { first })
+        local first = target(4001, true, grid_workspace)
+        context(grid_workspace, { first })
         provider.recalculate(current_context)
         command()
         T.equal(dispatched[#dispatched].kind, "layout")
@@ -185,9 +185,9 @@ return function(T)
         local first = target(5001, true, owner)
         local ctx = context(owner, { first })
         provider.recalculate(ctx)
-        T.truthy(canvas.engine.workspaces["106"].tiles["window:5001"])
+        T.truthy(grid.engine.workspaces["106"].tiles["window:5001"])
         handlers["window.close"][1](first.window)
-        T.equal(canvas.engine.workspaces["106"].tiles["window:5001"], nil)
+        T.equal(grid.engine.workspaces["106"].tiles["window:5001"], nil)
     end)
 
     T.case("workspace removal prunes only destroyed workspace state", function()
@@ -199,17 +199,17 @@ return function(T)
         provider.recalculate(context(survivor, { second }))
         workspaces["107"] = nil
         handlers["workspace.removed"][1](removed)
-        T.equal(canvas.engine.workspaces["107"], nil)
-        T.truthy(canvas.engine.workspaces["108"])
+        T.equal(grid.engine.workspaces["107"], nil)
+        T.truthy(grid.engine.workspaces["108"])
     end)
 
-    T.case("special-workspace XWayland targets use the same canvas path", function()
+    T.case("special-workspace XWayland targets use the same grid path", function()
         local owner = workspace(-99)
         owner.special = true
         local xwayland = target(7001, true, owner)
         xwayland.window.xwayland = true
         provider.recalculate(context(owner, { xwayland }, { x = -1280, y = 25, w = 1280, h = 695 }))
-        T.truthy(canvas.engine.workspaces["-99"].tiles["window:7001"])
+        T.truthy(grid.engine.workspaces["-99"].tiles["window:7001"])
         T.truthy(xwayland.placed)
         T.truthy(xwayland.placed.x > -1280)
     end)

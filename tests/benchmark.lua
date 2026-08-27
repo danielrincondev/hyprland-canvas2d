@@ -1,6 +1,6 @@
 package.path = "./hypr/?.lua;./hypr/?/init.lua;" .. package.path
 
-local Engine = require("canvas2d.engine")
+local Engine = require("grid.engine")
 
 local area = { x = 0, y = 0, w = 1920, h = 1080 }
 local counts = { 10, 25, 50, 100 }
