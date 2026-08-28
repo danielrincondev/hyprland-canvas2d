@@ -1,13 +1,14 @@
 -- Copy hypr/grid to ~/.config/hypr/grid, then load this after
 -- Omarchy/default Hyprland configuration and before any conflicting binds.
 local grid = require("grid").setup({
-    -- Relative width presets cycled by Super+Alt+Left/Right. Displayed width
-    -- is each cell's weight relative to row siblings, clamped to the screen.
+    -- New windows keep this fixed world size until explicitly resized.
+    tile_width_ratio = 0.50,
+    tile_height_ratio = 1.00,
+    -- Relative width presets cycled by Super+Alt+Left/Right.
     width_presets = { 0.34, 0.50, 0.67, 1.00 },
-    default_width = 0.50,
     pan_step = 300,
     resize_step = 60,
-    viewport_margin = 48,
+    viewport_margin = 0,
     insertion = "auto",
     auto_reveal = true,
 })
@@ -50,10 +51,11 @@ for key, direction in pairs(vim_directions) do
         { repeating = true }
     )
 
-    -- Horizontal moves reorder within the focused row (wrapping at its edges);
-    -- vertical moves push/pull the whole window into the row below/above,
-    -- creating that band when missing. The fallback keeps this binding useful
-    -- on dwindle/scrolling/monocle.
+    -- Move the focused window to the neighboring slot without changing
+    -- either window's width or height. Vertical moves append to the adjacent
+    -- row and compact the old row; an empty edge creates a new row at the
+    -- canvas' leading edge. The fallback remains useful on dwindle/scrolling/
+    -- monocle.
     hl.bind(
         "SUPER + SHIFT + " .. key,
         grid.command(
@@ -62,8 +64,9 @@ for key, direction in pairs(vim_directions) do
         )
     )
 
-    -- Up/down transfer height between neighbor rows, clamped at min_height;
-    -- left/right cycle width through width_presets without exceeding the screen.
+-- Width cycles keep each row independent and compact its members left-to-right.
+-- Vertical and explicit horizontal resize still change only the focused
+-- rectangle's size.
     hl.bind(
         "SUPER + ALT + " .. key,
         grid.command("resize " .. direction),

@@ -24,13 +24,15 @@ return function(T)
         T.equal(Geometry.directional_neighbor(tiles, "center", "down"), "down")
     end)
 
-    T.case("spatial focus uses weighted diagonal fallback", function()
+    T.case("horizontal focus never falls through to another row", function()
         local tiles = {
             focused = { x = 0, y = 0, w = 100, h = 100 },
             nearly_vertical = { x = 110, y = 300, w = 100, h = 100 },
             balanced = { x = 200, y = 120, w = 100, h = 100 },
+            balanced_left = { x = -200, y = 120, w = 100, h = 100 },
         }
-        T.equal(Geometry.directional_neighbor(tiles, "focused", "right", { diagonal_weight = 2 }), "balanced")
+        T.equal(Geometry.directional_neighbor(tiles, "focused", "right", { diagonal_weight = 2 }), nil)
+        T.equal(Geometry.directional_neighbor(tiles, "focused", "left", { diagonal_weight = 2 }), nil)
     end)
 
     T.case("viewport reveal moves only enough for margin", function()
@@ -73,6 +75,7 @@ return function(T)
         T.near(bounds.w, 800)
         T.near(bounds.h, 575)
     end)
+
     T.case("distribute splits totals exactly and honors minimums", function()
         local sizes = Geometry.distribute({ 0.5, 0.5 }, 1000, 50)
         T.near(sizes[1] + sizes[2], 1000)
@@ -88,42 +91,36 @@ return function(T)
         T.near(even[1], 100)
     end)
 
-    T.case("derive_grid makes the first tile fill the canvas", function()
-        local tiles = Geometry.derive_grid(
-            { { height = 1, cells = { { key = "a", width = 0.5 } } } },
-            { x = 0, y = 0, w = 1000, h = 800 },
-            { min_width = 160, min_height = 100 }
-        )
+    T.case("derive_grid keeps fixed cell dimensions as rows grow", function()
+        local rows = {
+            { height = 440, cells = { { key = "a", width = 500, height = 440 } } },
+        }
+        local tiles = Geometry.derive_grid(rows, { x = 0, y = 0, w = 1000, h = 800 }, { min_width = 160, min_height = 100 })
         T.near(tiles.a.x, 0)
         T.near(tiles.a.y, 0)
-        T.near(tiles.a.w, 1000)
-        T.near(tiles.a.h, 800)
+        T.near(tiles.a.w, 500)
+        T.near(tiles.a.h, 440)
+
+        rows[1].cells[#rows[1].cells + 1] = { key = "b", width = 500, height = 440 }
+        tiles = Geometry.derive_grid(rows, { x = 0, y = 0, w = 1000, h = 800 }, { min_width = 160, min_height = 100 })
+        T.near(tiles.a.w, 500)
+        T.near(tiles.b.w, 500)
+        T.near(tiles.b.x, 500)
     end)
 
-    T.case("derive_grid stacks rows across the full height", function()
+    T.case("derive_grid stacks fixed-height rows without splitting the height", function()
         local rows = {
-            { height = 1, cells = { { key = "t", width = 0.5 } } },
-            { height = 1, cells = { { key = "b", width = 0.5 } } },
+            { height = 440, cells = { { key = "top", width = 500, height = 440 } } },
+            { height = 440, cells = { { key = "bottom", width = 500, height = 440 } } },
         }
-        local tiles = Geometry.derive_grid(rows, { x = 0, y = 0, w = 1000, h = 900 }, {})
-        T.near(tiles.t.h, 450)
-        T.near(tiles.b.h, 450)
-        T.near(tiles.b.y, 450)
-        T.near(tiles.b.w, 1000)
+        local tiles = Geometry.derive_grid(rows, { x = 0, y = 0, w = 1000, h = 800 }, {})
+        T.near(tiles.top.h, 440)
+        T.near(tiles.bottom.h, 440)
+        T.near(tiles.bottom.y, 440)
     end)
 
-    T.case("derive_grid lays out row cells contiguously across the width", function()
-        local rows = {
-            { height = 1, cells = { { key = "a", width = 0.34 }, { key = "b", width = 0.67 } } },
-        }
-        local tiles = Geometry.derive_grid(rows, { x = 0, y = 0, w = 1200, h = 800 }, {})
-        T.near(tiles.a.x + tiles.a.w, tiles.b.x)
-        T.near(tiles.a.x + tiles.a.w + tiles.b.w, 1200)
-        T.truthy(tiles.b.w > tiles.a.w)
-    end)
-
-    T.case("aligned cell positions minimize distance to a target edge", function()
-        local cells = { { key = "a", width = 0.5 }, { key = "b", width = 0.5 } }
+    T.case("aligned cell positions use fixed widths", function()
+        local cells = { { key = "a", width = 500 }, { key = "b", width = 500 } }
         T.equal(Geometry.aligned_cell_index(cells, 0, 1000), 1)
         T.equal(Geometry.aligned_cell_index(cells, 990, 1000), 3)
         T.equal(Geometry.aligned_cell_index(cells, 480, 1000), 2)

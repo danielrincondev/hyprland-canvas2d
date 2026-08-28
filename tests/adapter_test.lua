@@ -121,6 +121,9 @@ return function(T)
         T.near(state.tiles["window:1001"].y, 0)
         T.near(first.placed.x, 1920)
         T.near(first.placed.y, 30)
+        handlers["window.active"][1](first.window, 0)
+        T.near(state.viewport.x, 0)
+        T.near(first.placed.x, 1920)
 
         provider.layout_msg(ctx, "pan right 300")
         provider.recalculate(ctx)
@@ -144,7 +147,7 @@ return function(T)
         T.truthy(right.window.active)
     end)
 
-    T.case("click focus event minimally reveals a panned-offscreen tiled window", function()
+    T.case("click focus event keeps a row's left edge flush", function()
         local owner = workspace(103)
         local near = target(3001, false, owner)
         local far = target(3002, true, owner)
@@ -157,7 +160,7 @@ return function(T)
         near.window.active = true
 
         handlers["window.active"][1](near.window, 0)
-        T.near(state.viewport.x, -48) -- margin reveal pulls the view back
+        T.near(state.viewport.x, 0)
     end)
 
     T.case("mixed-layout command falls back outside grid workspaces", function()
@@ -185,6 +188,53 @@ return function(T)
         handlers["window.close"][1](first.window)
         T.equal(grid.engine.workspaces["106"].tiles["window:5001"], nil)
     end)
+    T.case("closing focused windows focuses the same-row neighbor", function()
+        local owner = workspace(109)
+        local left = target(5101, false, owner)
+        local middle = target(5102, true, owner)
+        local right = target(5103, false, owner)
+        local ctx = context(owner, { left, middle, right })
+        provider.recalculate(ctx)
+        local state = grid.engine.workspaces["109"]
+
+        handlers["window.close"][1](middle.window)
+
+        T.equal(state.focus_key, "window:5103")
+        T.equal(state.tiles["window:5102"], nil)
+        T.equal(dispatched[#dispatched].kind, "focus")
+        T.equal(dispatched[#dispatched].window, right.window)
+        T.truthy(right.window.active)
+        T.near(state.tiles["window:5103"].x, 500)
+        T.truthy(grid.engine:validate(state))
+    end)
+    T.case("closing the only window in a row deletes the row and focuses another row", function()
+        local owner = workspace(110)
+        local top = target(5201, true, owner)
+        local bottom = target(5202, false, owner)
+        local ctx = context(owner, { top, bottom })
+        provider.recalculate(ctx)
+        local state = grid.engine.workspaces["110"]
+        state.tiles["window:5202"].x = 0
+        state.tiles["window:5202"].y = state.tiles["window:5201"].h
+        grid.engine:_materialize(state)
+        local dispatch_count = #dispatched
+
+        handlers["window.close"][1](top.window)
+
+        T.equal(#dispatched, dispatch_count + 1)
+        T.equal(dispatched[#dispatched].kind, "focus")
+        T.equal(dispatched[#dispatched].window, bottom.window)
+        T.equal(state.focus_key, "window:5202")
+        T.equal(state.tiles["window:5201"], nil)
+        T.near(state.tiles["window:5202"].y, 0)
+        T.near(state.viewport.y, 0)
+        T.truthy(bottom.window.active)
+
+        ctx.targets = { bottom }
+        provider.recalculate(ctx)
+        T.near(state.tiles["window:5202"].y, 0)
+        T.truthy(grid.engine:validate(state))
+    end)
 
     T.case("workspace removal prunes only destroyed workspace state", function()
         local removed = workspace(107)
@@ -209,7 +259,7 @@ return function(T)
         T.truthy(xwayland.placed)
         T.near(xwayland.placed.x, -1280)
         T.near(xwayland.placed.y, 25)
-        T.near(xwayland.placed.w, 1280)
+        T.near(xwayland.placed.w, 640)
         T.near(xwayland.placed.h, 695)
     end)
 end

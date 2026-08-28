@@ -155,7 +155,9 @@ function Geometry.directional_neighbor(tiles, source_key, direction, options)
                 perpendicular_center_delta = math.abs(candidate_cx - source_cx)
             end
 
-            if primary_delta > epsilon then
+            if primary_delta > epsilon
+                and (direction == "up" or direction == "down" or overlap > epsilon)
+            then
                 local lane_penalty = overlap > epsilon and 0 or 1
                 local weighted_distance = primary_gap + diagonal_weight * perpendicular_gap
                 local center_distance = math.sqrt((candidate_cx - source_cx) ^ 2 + (candidate_cy - source_cy) ^ 2)
@@ -263,63 +265,64 @@ function Geometry.distribute(weights, total, minimum)
     return sizes
 end
 
--- Derive world-space tile rectangles from row/cell structure. Rows always span
--- the full canvas height (weights split it); cells always span the full canvas
--- width within their row. The canvas starts at world origin (0, 0).
+-- Derive fixed-size rectangles from row/cell data.  Width and height values
+-- greater than one are world pixels; values in (0, 1] are ratios of the
+-- supplied area and are accepted for small standalone callers.  Unlike a
+-- monitor split, this function never redistributes a cell when another cell
+-- is added.
 function Geometry.derive_grid(rows, area, options)
     options = options or {}
     local width = math.max(1, area.w)
     local height = math.max(1, area.h)
     local min_width = math.max(options.min_width or 0, 0)
     local min_height = math.max(options.min_height or 0, 0)
-
-    local row_weights = {}
-    for index, row in ipairs(rows) do
-        row_weights[index] = row.height and row.height > 0 and row.height or 1
-    end
-    local row_sizes = Geometry.distribute(row_weights, height, min_height)
-
     local tiles = {}
     local y = 0
-    for index, row in ipairs(rows) do
-        local cell_weights = {}
-        for cell_index, cell in ipairs(row.cells) do
-            cell_weights[cell_index] = cell.width and cell.width > 0 and cell.width or 1
-        end
-        local cell_sizes = Geometry.distribute(cell_weights, width, min_width)
 
+    local function dimension(value, total, fallback)
+        if type(value) ~= "number" or value <= 0 then
+            value = fallback
+        end
+        if value <= 1 then
+            value = total * value
+        end
+        return math.max(1, value)
+    end
+
+    for _, row in ipairs(rows) do
+        local row_height = dimension(row.height, height, height)
         local x = 0
-        for cell_index, cell in ipairs(row.cells) do
+        for _, cell in ipairs(row.cells) do
+            local cell_width = math.max(min_width, dimension(cell.width, width, width))
+            local cell_height = math.max(min_height, dimension(cell.height, height, row_height))
             tiles[cell.key] = {
                 x = x,
                 y = y,
-                w = cell_sizes[cell_index],
-                h = row_sizes[index],
+                w = cell_width,
+                h = cell_height,
                 present = true,
             }
-            x = x + cell_sizes[cell_index]
+            x = x + cell_width
+            row_height = math.max(row_height, cell_height)
         end
-
-        y = y + row_sizes[index]
+        y = y + row_height
     end
 
     return tiles
 end
 
--- Best-effort horizontal alignment for cross-row insertions: returns the
--- insertion position (1..count+1) whose resulting left edge is closest to
--- target_left, using proportional widths as the estimate.
+-- Best-effort horizontal alignment for row-based callers: returns the
+-- insertion position whose resulting left edge is closest to target_left.
 function Geometry.aligned_cell_index(cells, target_left, area_width)
     local count = #cells
     if count == 0 then
         return 1
     end
 
-    local weight_total = 0
-    local weights = {}
+    local widths = {}
     for index, cell in ipairs(cells) do
-        weights[index] = cell.width and cell.width > 0 and cell.width or 1
-        weight_total = weight_total + weights[index]
+        local value = cell.width and cell.width > 0 and cell.width or 1
+        widths[index] = value <= 1 and area_width * value or value
     end
 
     local best_position = 1
@@ -332,7 +335,7 @@ function Geometry.aligned_cell_index(cells, target_left, area_width)
             best_position = position
         end
         if position <= count then
-            prefix = prefix + area_width * weights[position] / weight_total
+            prefix = prefix + widths[position]
         end
     end
 

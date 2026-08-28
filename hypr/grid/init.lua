@@ -68,12 +68,23 @@ function Grid.setup(options)
     local layout_name = "lua:" .. engine.config.layout_name
     local subscriptions = {}
     local suppress_auto_reveal = false
+    local references_by_workspace = {}
 
     local function sync_context(ctx)
         local descriptors, references = context_descriptors(ctx)
         local workspace_id = context_workspace_id(ctx)
         local state = engine:sync(workspace_id, descriptors, ctx.area)
+        references_by_workspace[workspace_id] = references
         return state, references
+    end
+
+    local function dispatch_focus(window)
+        suppress_auto_reveal = true
+        local ok, dispatch_error = pcall(function()
+            hl.dispatch(hl.dsp.focus({ window = window }))
+        end)
+        suppress_auto_reveal = false
+        return ok, dispatch_error
     end
 
     local provider = {
@@ -98,11 +109,7 @@ function Grid.setup(options)
                 local target = references[result.focus_key]
                 local window = target and target.window or nil
                 if window then
-                    suppress_auto_reveal = true
-                    local ok, dispatch_error = pcall(function()
-                        hl.dispatch(hl.dsp.focus({ window = window }))
-                    end)
-                    suppress_auto_reveal = false
+                    local ok, dispatch_error = dispatch_focus(window)
                     if not ok then
                         return "grid: failed to focus spatial neighbor: " .. tostring(dispatch_error)
                     end
@@ -158,10 +165,38 @@ function Grid.setup(options)
             if not window or window.group then
                 return
             end
+
+            local key
             if window.stable_id ~= nil then
-                engine:forget_window("window:" .. tostring(window.stable_id))
+                key = "window:" .. tostring(window.stable_id)
             elseif window.address then
-                engine:forget_window("address:" .. tostring(window.address))
+                key = "address:" .. tostring(window.address)
+            end
+            if not key then
+                return
+            end
+
+            local workspace_id = window.workspace
+                and window.workspace.id ~= nil
+                and tostring(window.workspace.id)
+                or nil
+            local next_key = engine:forget_window(key)
+            if not next_key then
+                return
+            end
+
+            local workspace_references = workspace_id and references_by_workspace[workspace_id] or nil
+            local target = workspace_references and workspace_references[next_key] or nil
+            if not target then
+                for _, references in pairs(references_by_workspace) do
+                    target = references[next_key]
+                    if target then
+                        break
+                    end
+                end
+            end
+            if target and target.window then
+                dispatch_focus(target.window)
             end
         end)
 
