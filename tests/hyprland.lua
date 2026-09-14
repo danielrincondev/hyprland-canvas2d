@@ -5,6 +5,7 @@ local grid = require("grid").setup({
     pan_step = 240,
     resize_step = 40,
     viewport_margin = 32,
+    scroll_mode = "rows",
 })
 -- Nested smoke tests invoke layout messages through `hyprctl eval`.
 grid_test = grid
@@ -57,3 +58,8 @@ hl.bind("SUPER + ALT + J", grid.command("resize down"), { repeating = true })
 hl.bind("SUPER + C", grid.command("center focused"))
 hl.bind("SUPER + F", grid.command("fit all"))
 hl.bind("SUPER + R", grid.command("reset viewport"))
+hl.bind("SUPER + CTRL + SHIFT + S", grid.command("scroll toggle"))
+local native_plugin = os.getenv("GRID_NATIVE_OVERVIEW")
+if native_plugin then
+    require("grid.native_overview").setup({ path = native_plugin })
+end

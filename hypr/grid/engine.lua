@@ -18,6 +18,7 @@ local DEFAULTS = {
     pan_step = 300,
     resize_step = 60,
     viewport_margin = 0,
+    row_gap = 0,
     fit_padding = 32,
     min_fit_scale = 0.10,
     max_fit_scale = 1.00,
@@ -26,6 +27,7 @@ local DEFAULTS = {
     insertion = "auto",
     auto_reveal = true,
     reveal_new = true,
+    scroll_mode = "rows",
 }
 
 local NUMBER_OPTIONS = {
@@ -38,6 +40,7 @@ local NUMBER_OPTIONS = {
     pan_step = { 0, math.huge },
     resize_step = { 0, math.huge },
     viewport_margin = { 0, math.huge },
+    row_gap = { 0, math.huge },
     fit_padding = { 0, math.huge },
     min_fit_scale = { 0.01, 1.00 },
     max_fit_scale = { 0.01, 4.00 },
@@ -51,6 +54,13 @@ local INSERTION_MODES = {
     right = true,
     up = true,
     down = true,
+}
+local OVERVIEW_ACTIONS = {
+    enter = true,
+    exit = true,
+    toggle = true,
+    activate = true,
+    cancel = true,
 }
 
 local DIRECTION_ALIASES = {
@@ -148,6 +158,16 @@ local function expand_compound_command(tokens)
     if command == "cycle-width-backward" or command == "cycle-width-back" then
         return { "cycle", "width", "backward" }
     end
+    if #tokens == 1 then
+        local overview_direction = command:match("^overview%-focus%-([a-z]+)$")
+        if overview_direction then
+            return { "overview", "focus", overview_direction }
+        end
+        local overview_action = command:match("^overview%-([a-z]+)$")
+        if OVERVIEW_ACTIONS[overview_action] then
+            return { "overview", overview_action }
+        end
+    end
     if #tokens == 1 and command == "center-focused" then
         return { "center", "focused" }
     end
@@ -199,6 +219,10 @@ local function validate_options(options)
         elseif key == "insertion" then
             if type(value) ~= "string" or not INSERTION_MODES[value] then
                 error("grid option insertion must be auto, left, right, up, or down", 3)
+            end
+        elseif key == "scroll_mode" then
+            if value ~= "rows" and value ~= "shared" then
+                error("grid option scroll_mode must be rows or shared", 3)
             end
         elseif key == "auto_reveal" or key == "reveal_new" then
             if type(value) ~= "boolean" then
@@ -253,10 +277,21 @@ function Engine:workspace(workspace_id, area)
                 scale = 1,
             },
             tiles = {},
-            rows = {}, -- derived compatibility view; tiles remain authoritative
+            rows = {},
+            row_views = {},
+            row_order = {},
+            next_row_id = 0,
+            active_row_id = nil,
+            scroll_mode = self.config.scroll_mode,
+            fitted = false,
             order = {},
             focus_key = nil,
             suppress_reveal_once = false,
+            overview = {
+                active = false,
+                saved_viewport = nil,
+                saved_focus_key = nil,
+            },
             insertion = self.config.insertion,
         }
         self.workspaces[id] = state
@@ -306,6 +341,21 @@ function Engine:present_count(state)
     return count
 end
 
+local function new_row_id(state, anchor_id, direction)
+    state.next_row_id = state.next_row_id + 1
+    local id = state.next_row_id
+    state.row_views[id] = { x = 0, focus_key = nil }
+    local position = #state.row_order + 1
+    for index, row_id in ipairs(state.row_order) do
+        if row_id == anchor_id then
+            position = index + (direction == "up" and 0 or 1)
+            break
+        end
+    end
+    table.insert(state.row_order, position, id)
+    return id
+end
+
 local function rebuild_rows(state, epsilon)
     local entries = {}
     for key, tile in pairs(state.tiles) do
@@ -324,14 +374,33 @@ local function rebuild_rows(state, epsilon)
         return a.tile.y < b.tile.y
     end)
 
-    local rows = {}
+    local rows, by_id = {}, {}
     for _, entry in ipairs(entries) do
-        local row = rows[#rows]
-        if not row or math.abs(row.y - entry.tile.y) > epsilon then
-            row = { y = entry.tile.y, height = entry.tile.h, cells = {} }
+        local tile = entry.tile
+        -- Public set_tile callers can seed a row by its top edge. Normal
+        -- insertion and movement assign explicit membership before this point.
+        if not tile.row_id then
+            local previous = rows[#rows]
+            if previous and math.abs(previous.y - tile.y) <= epsilon then
+                tile.row_id = previous.id
+            else
+                local next_id
+                for _, existing in ipairs(state.rows) do
+                    if existing.y > tile.y then
+                        next_id = existing.id
+                        break
+                    end
+                end
+                tile.row_id = new_row_id(state, next_id, "up")
+            end
+        end
+        local row = by_id[tile.row_id]
+        if not row then
+            row = { id = tile.row_id, y = tile.y, height = tile.h, cells = {} }
             rows[#rows + 1] = row
+            by_id[row.id] = row
         else
-            row.height = math.max(row.height, entry.tile.h)
+            row.height = math.max(row.height, Geometry.bottom(tile) - row.y)
         end
         row.cells[#row.cells + 1] = {
             key = entry.key,
@@ -339,14 +408,108 @@ local function rebuild_rows(state, epsilon)
             height = entry.tile.h,
         }
     end
+    for _, row in ipairs(rows) do
+        table.sort(row.cells, function(a, b)
+            local ax, bx = state.tiles[a.key].x, state.tiles[b.key].x
+            return ax == bx and tostring(a.key) < tostring(b.key) or ax < bx
+        end)
+    end
+    if state.scroll_mode == "rows" then
+        local positions = {}
+        for index, id in ipairs(state.row_order) do
+            positions[id] = index
+        end
+        table.sort(rows, function(a, b) return positions[a.id] < positions[b.id] end)
+    end
     state.rows = rows
+
+    local retained = {}
+    for _, tile in pairs(state.tiles) do
+        if tile.row_id then
+            retained[tile.row_id] = true
+        end
+    end
+    for id in pairs(state.row_views) do
+        if not retained[id] then
+            state.row_views[id] = nil
+        end
+    end
+    for index = #state.row_order, 1, -1 do
+        if not retained[state.row_order[index]] then
+            table.remove(state.row_order, index)
+        end
+    end
 end
 
 function Engine:_materialize(state)
-    -- Rectangles are the source of truth.  Rows are only an inexpensive
-    -- derived view for introspection and older callers.
     rebuild_rows(state, self.config.edge_tolerance)
+    if state.scroll_mode == "rows" or self.config.row_gap > 0 then
+        -- Independently translated rows need disjoint vertical bounds even
+        -- when height resizing has left their members staggered.
+        local bottom
+        for _, row in ipairs(state.rows) do
+            if bottom and row.y < bottom then
+                local shift = bottom - row.y
+                for _, cell in ipairs(row.cells) do
+                    state.tiles[cell.key].y = state.tiles[cell.key].y + shift
+                end
+                row.y = bottom
+            end
+            bottom = row.y + row.height + self.config.row_gap
+        end
+    end
     return state.tiles
+end
+
+function Engine:_save_row_view(state)
+    local view = state.row_views[state.active_row_id]
+    if view and state.scroll_mode == "rows" and not state.overview.active and not state.fitted then
+        view.x = state.viewport.x
+    end
+end
+
+function Engine:_activate_row(state, key)
+    local tile = state.tiles[key]
+    if not present(tile) or state.overview.active or state.fitted then
+        return false
+    end
+    local changed = state.active_row_id ~= tile.row_id
+    if changed then
+        self:_save_row_view(state)
+        state.active_row_id = tile.row_id
+        if state.scroll_mode == "rows" then
+            state.viewport.x = state.row_views[tile.row_id].x
+        end
+    end
+    if state.scroll_mode == "rows" then
+        state.row_views[tile.row_id].focus_key = key
+    end
+    return changed
+end
+
+function Engine:set_scroll_mode(state, mode)
+    if mode == "toggle" then
+        mode = state.scroll_mode == "rows" and "shared" or "rows"
+    end
+    if mode ~= "rows" and mode ~= "shared" then
+        return nil, "grid: scroll expects rows, shared, or toggle"
+    end
+    if state.overview.active or mode == state.scroll_mode then
+        return false
+    end
+    self:_resume_rows(state)
+    self:_save_row_view(state)
+    state.scroll_mode = mode
+    state.fitted = false
+    state.viewport.scale = 1
+    self:_materialize(state)
+    local tile = state.tiles[state.focus_key]
+    state.active_row_id = tile and tile.row_id or nil
+    if mode == "rows" then
+        local view = state.row_views[state.active_row_id]
+        state.viewport.x = view and view.x or 0
+    end
+    return true
 end
 
 
@@ -469,15 +632,15 @@ function Engine:_auto_insertion_rect(state, anchor, width, height)
     return make_rect("candidate", Geometry.right(anchor), anchor.y, width, height), "right"
 end
 
-local function directional_insertion_rect(anchor, direction, width, height)
+local function directional_insertion_rect(anchor, direction, width, height, row_gap)
     if direction == "left" then
         return make_rect("candidate", anchor.x - width, anchor.y, width, height)
     elseif direction == "right" then
         return make_rect("candidate", Geometry.right(anchor), anchor.y, width, height)
     elseif direction == "up" then
-        return make_rect("candidate", anchor.x, anchor.y - height, width, height)
+        return make_rect("candidate", anchor.x, anchor.y - height - row_gap, width, height)
     else
-        return make_rect("candidate", anchor.x, Geometry.bottom(anchor), width, height)
+        return make_rect("candidate", anchor.x, Geometry.bottom(anchor) + row_gap, width, height)
     end
 end
 
@@ -498,7 +661,7 @@ function Engine:_insert_new(state, key)
     if mode == "auto" then
         rect, push_direction = self:_auto_insertion_rect(state, anchor and anchor.tile, width, height)
     elseif anchor then
-        rect = directional_insertion_rect(anchor.tile, mode, width, height)
+        rect = directional_insertion_rect(anchor.tile, mode, width, height, self.config.row_gap)
         push_direction = mode
     else
         rect = make_rect("candidate", 0, 0, width, height)
@@ -506,9 +669,14 @@ function Engine:_insert_new(state, key)
     end
 
     rect.key = tostring(key)
-    self:_push_collisions(state, rect, push_direction)
+    rect.row_id = anchor and (mode == "auto" or mode == "left" or mode == "right")
+        and anchor.tile.row_id or new_row_id(state, anchor and anchor.tile.row_id, mode)
     state.tiles[rect.key] = rect
     state.order[#state.order + 1] = rect.key
+    if state.scroll_mode == "rows" then
+        self:_materialize(state)
+    end
+    self:_push_collisions(state, rect, push_direction)
     state.focus_key = rect.key
     return rect.key
 end
@@ -534,7 +702,8 @@ end
 local function compact_horizontal_gap(state, removed, epsilon)
     for _, tile in pairs(state.tiles) do
         if present(tile) and tile ~= removed then
-            local same_band = Geometry.overlap_1d(
+            local same_band = state.scroll_mode == "rows" and tile.row_id == removed.row_id
+                or state.scroll_mode == "shared" and Geometry.overlap_1d(
                 removed.y,
                 Geometry.bottom(removed),
                 tile.y,
@@ -573,12 +742,13 @@ local function horizontal_band_entries(state, source, epsilon)
     local entries = {}
     for key, tile in pairs(state.tiles) do
         if present(tile)
-            and Geometry.overlap_1d(
+            and (state.scroll_mode == "rows" and tile.row_id == source.row_id
+            or state.scroll_mode == "shared" and Geometry.overlap_1d(
                 source.y,
                 Geometry.bottom(source),
                 tile.y,
                 Geometry.bottom(tile)
-            ) > epsilon
+            ) > epsilon)
         then
             entries[#entries + 1] = { key = key, tile = tile }
         end
@@ -614,6 +784,16 @@ local function reflow_horizontal_band(entries, edge, anchor)
     end
 end
 
+local function horizontal_row_neighbor(state, source, direction, epsilon)
+    local entries = horizontal_band_entries(state, source, epsilon)
+    for index, entry in ipairs(entries) do
+        if entry.tile == source then
+            local neighbor = entries[index + (direction == "right" and 1 or -1)]
+            return neighbor and neighbor.key or nil
+        end
+    end
+end
+
 
 -- Reorder the lane rather than swapping rectangle dimensions.  With equal
 -- sizes this is the familiar one-slot swap; with unequal sizes it keeps every
@@ -622,12 +802,12 @@ function Engine:_swap_lane_positions(state, source_key, neighbor_key, direction)
     local source = state.tiles[source_key]
     local neighbor = state.tiles[neighbor_key]
     local epsilon = self.config.edge_tolerance
-    local lane = {
+    local lane = state.scroll_mode == "rows" and horizontal_band_entries(state, source, epsilon) or {
         { key = source_key, tile = source },
         { key = neighbor_key, tile = neighbor },
     }
 
-    if not lane_contains(neighbor, source, direction, epsilon) then
+    if state.scroll_mode == "shared" and not lane_contains(neighbor, source, direction, epsilon) then
         local source_x, source_y = source.x, source.y
         source.x, source.y = neighbor.x, neighbor.y
         neighbor.x, neighbor.y = source_x, source_y
@@ -638,7 +818,7 @@ function Engine:_swap_lane_positions(state, source_key, neighbor_key, direction)
     -- Include the whole connected lane.  A resize can leave staggered
     -- perpendicular intervals, so checking only the source interval would
     -- let a reflowed tile collide with a later member of the same lane.
-    local changed = true
+    local changed = state.scroll_mode == "shared"
     while changed do
         changed = false
         for key, tile in pairs(state.tiles) do
@@ -722,6 +902,7 @@ function Engine:move(state, direction)
         compact_horizontal_gap(state, tile, epsilon)
 
         if destination_row then
+            tile.row_id = destination_row.id
             local destination_x
             for _, cell in ipairs(destination_row.cells) do
                 local candidate = state.tiles[cell.key]
@@ -734,11 +915,12 @@ function Engine:move(state, direction)
             tile.x = destination_x or row_start
             tile.y = destination_row.y
         else
+            tile.row_id = new_row_id(state, tile.row_id, direction)
             tile.x = row_start
             if direction == "down" then
-                tile.y = Geometry.bottom(tile)
+                tile.y = Geometry.bottom(tile) + self.config.row_gap
             else
-                tile.y = tile.y - tile.h
+                tile.y = tile.y - tile.h - self.config.row_gap
             end
         end
 
@@ -749,10 +931,15 @@ function Engine:move(state, direction)
         return true
     end
 
-    local neighbor = Geometry.directional_neighbor(state.tiles, anchor.key, direction, {
-        epsilon = self.config.edge_tolerance,
-        diagonal_weight = self.config.diagonal_weight,
-    })
+    local neighbor
+    if state.scroll_mode == "rows" then
+        neighbor = horizontal_row_neighbor(state, anchor.tile, direction, self.config.edge_tolerance)
+    else
+        neighbor = Geometry.directional_neighbor(state.tiles, anchor.key, direction, {
+            epsilon = self.config.edge_tolerance,
+            diagonal_weight = self.config.diagonal_weight,
+        })
+    end
     if not neighbor then
         return false
     end
@@ -801,6 +988,9 @@ function Engine:cycle_width(state, direction)
     -- Width cycles are row-local: keep the row's left edge and close the
     -- row from left to right without consulting any other row.
     reflow_horizontal_band(entries, "left", row_start)
+    -- Reflow can push a tall member into a staggered tile outside the
+    -- focused tile's band. Resolve those collisions as well.
+    self:_push_collisions(state, tile, "right")
     self:_materialize(state)
     return true
 end
@@ -846,6 +1036,7 @@ function Engine:_resize_tile(state, key, direction, amount)
     if horizontal then
         local edge = direction == "right" and "left" or "right"
         reflow_horizontal_band(entries, edge, edge == "left" and row_start or row_end)
+        self:_push_collisions(state, tile, direction)
     elseif growing then
         self:_push_collisions(state, tile, direction)
     end
@@ -880,8 +1071,13 @@ end
 
 function Engine:screen_box(state, tile, area)
     local scale = state.viewport.scale
+    local x = state.viewport.x
+    if state.scroll_mode == "rows" and not state.overview.active and not state.fitted then
+        local view = state.row_views[tile.row_id]
+        x = tile.row_id == state.active_row_id and state.viewport.x or (view and view.x or 0)
+    end
     return {
-        x = area.x + (tile.x - state.viewport.x) * scale,
+        x = area.x + (tile.x - x) * scale,
         y = area.y + (tile.y - state.viewport.y) * scale,
         w = tile.w * scale,
         h = tile.h * scale,
@@ -889,10 +1085,15 @@ function Engine:screen_box(state, tile, area)
 end
 
 function Engine:pan(state, direction, amount)
+    if state.overview.active then
+        return false
+    end
     amount = amount or self.config.pan_step
     if not numeric(amount) then
         return false
     end
+    self:_resume_rows(state)
+    self:_activate_row(state, state.focus_key)
     if direction == "left" then
         state.viewport.x = state.viewport.x - amount
     elseif direction == "right" then
@@ -904,14 +1105,41 @@ function Engine:pan(state, direction, amount)
     else
         return false
     end
+    self:_save_row_view(state)
     return amount ~= 0
 end
 
+function Engine:_resume_rows(state)
+    if state.scroll_mode == "rows" and state.fitted and not state.overview.active then
+        state.fitted = false
+        state.viewport.scale = 1
+        local view = state.row_views[state.active_row_id]
+        state.viewport.x = view and view.x or 0
+    end
+end
+
+function Engine:_reveal_vertical(state, key)
+    if state.overview.active or not present(state.tiles[key]) then
+        return false
+    end
+    self:_resume_rows(state)
+    self:_activate_row(state, key)
+    local _, y = Geometry.reveal(self:world_viewport(state), state.tiles[key], 0)
+    local changed = y ~= state.viewport.y
+    state.viewport.y = y
+    return changed
+end
+
 function Engine:reveal(state, key)
+    if state.overview.active then
+        return false
+    end
     local tile = state.tiles[key]
     if not present(tile) then
         return false
     end
+    self:_resume_rows(state)
+    self:_activate_row(state, key)
     if state.suppress_reveal_once then
         state.suppress_reveal_once = false
         return false
@@ -932,14 +1160,20 @@ function Engine:reveal(state, key)
     local changed = x ~= state.viewport.x or y ~= state.viewport.y
     state.viewport.x = x
     state.viewport.y = y
+    self:_save_row_view(state)
     return changed
 end
 
 function Engine:center(state, key)
+    if state.overview.active then
+        return false
+    end
     local tile = state.tiles[key]
     if not present(tile) then
         return false
     end
+    self:_resume_rows(state)
+    self:_activate_row(state, key)
 
     local viewport = self:world_viewport(state)
     local x = tile.x + tile.w / 2 - viewport.w / 2
@@ -947,6 +1181,7 @@ function Engine:center(state, key)
     local changed = x ~= state.viewport.x or y ~= state.viewport.y
     state.viewport.x = x
     state.viewport.y = y
+    self:_save_row_view(state)
     return changed
 end
 
@@ -955,12 +1190,17 @@ function Engine:fit_all(state)
     if not bounds then
         return false
     end
+    self:_save_row_view(state)
+    state.fitted = true
 
     local width = math.max(1, state.viewport.width - 2 * self.config.fit_padding)
     local height = math.max(1, state.viewport.height - 2 * self.config.fit_padding)
     local scale_x = bounds.w > 0 and width / bounds.w or self.config.max_fit_scale
     local scale_y = bounds.h > 0 and height / bounds.h or self.config.max_fit_scale
-    local scale = math.max(self.config.min_fit_scale, math.min(self.config.max_fit_scale, scale_x, scale_y))
+    local scale = math.min(self.config.max_fit_scale, scale_x, scale_y)
+    if not state.overview.active then
+        scale = math.max(self.config.min_fit_scale, scale)
+    end
     local changed = scale ~= state.viewport.scale
     state.viewport.scale = scale
 
@@ -974,17 +1214,112 @@ function Engine:fit_all(state)
 end
 
 function Engine:reset_viewport(state)
+    if state.overview.active then
+        return false
+    end
+    self:_resume_rows(state)
+    self:_activate_row(state, state.focus_key)
     local changed = state.viewport.x ~= 0 or state.viewport.y ~= 0 or state.viewport.scale ~= 1
     state.viewport.x = 0
     state.viewport.y = 0
     state.viewport.scale = 1
+    state.fitted = false
+    self:_save_row_view(state)
     return changed
+end
+
+function Engine:enter_overview(state)
+    local overview = state.overview
+    if overview.active then
+        return false
+    end
+    self:_save_row_view(state)
+    overview.saved_row_id = state.active_row_id
+    overview.saved_fitted = state.fitted
+
+    overview.saved_viewport = {
+        x = state.viewport.x,
+        y = state.viewport.y,
+        scale = state.viewport.scale,
+    }
+    overview.saved_focus_key = state.focus_key
+    overview.active = true
+    self:fit_all(state)
+    return true
+end
+
+function Engine:leave_overview(state, cancel)
+    local overview = state.overview
+    if not overview.active then
+        return false
+    end
+
+    local focus_key = state.focus_key
+    if cancel and present(state.tiles[overview.saved_focus_key]) then
+        focus_key = overview.saved_focus_key
+    end
+
+    local saved_viewport = overview.saved_viewport
+    overview.active = false
+    state.active_row_id = overview.saved_row_id
+    state.fitted = overview.saved_fitted
+    overview.saved_row_id = nil
+    overview.saved_fitted = nil
+    overview.saved_viewport = nil
+    overview.saved_focus_key = nil
+    state.focus_key = focus_key
+
+    if saved_viewport then
+        state.viewport.x = saved_viewport.x
+        state.viewport.y = saved_viewport.y
+        state.viewport.scale = saved_viewport.scale
+    end
+    if not cancel and focus_key then
+        self:reveal(state, focus_key)
+    end
+
+    return true, focus_key
 end
 
 function Engine:focus(state, direction)
     local anchor = self:_anchor_location(state)
     if not anchor or not Geometry.valid_direction(direction) then
         return nil
+    end
+    if state.scroll_mode == "rows" and not state.overview.active then
+        self:_resume_rows(state)
+        self:_activate_row(state, anchor.key)
+        if direction == "up" or direction == "down" then
+            local row = adjacent_row(state, anchor.tile, direction, self.config.edge_tolerance)
+            if not row then
+                return nil
+            end
+            local view = state.row_views[row.id]
+            local key = view.focus_key
+            if not present(state.tiles[key]) or state.tiles[key].row_id ~= row.id then
+                local center = anchor.tile.x + anchor.tile.w / 2 - state.viewport.x
+                local distance = math.huge
+                for _, cell in ipairs(row.cells) do
+                    local tile = state.tiles[cell.key]
+                    local delta = math.abs(tile.x + tile.w / 2 - view.x - center)
+                    if delta < distance then
+                        key, distance = cell.key, delta
+                    end
+                end
+            end
+            state.focus_key = key
+            self:_activate_row(state, key)
+            -- Vertical navigation restores the exact horizontal position,
+            -- including intentional panning away from the focused window.
+            self:_reveal_vertical(state, key)
+            return key
+        end
+        local key = horizontal_row_neighbor(state, anchor.tile, direction, self.config.edge_tolerance)
+        if key then
+            state.focus_key = key
+            self:reveal(state, key)
+        end
+        return key
     end
 
     local next_key = Geometry.directional_neighbor(state.tiles, anchor.key, direction, {
@@ -1004,10 +1339,12 @@ function Engine:sync(workspace_id, descriptors, area)
     local state = self:workspace(workspace_id, area)
     local active_key
     local newly_added = {}
+    local previously_present = {}
 
     -- A target missing from a recalculate context may be floating temporarily.
     -- Keep its rectangle until the close/move lifecycle callback removes it.
-    for _, tile in pairs(state.tiles) do
+    for key, tile in pairs(state.tiles) do
+        previously_present[key] = present(tile)
         tile.present = false
     end
 
@@ -1018,6 +1355,16 @@ function Engine:sync(workspace_id, descriptors, area)
         end
         if descriptor.active then
             active_key = key
+        end
+    end
+
+    -- Parked rectangles may have had their old space occupied while absent.
+    -- Restore them in stable insertion order, preserving their saved boxes
+    -- and translating collisions before inserting any new targets.
+    for _, key in ipairs(state.order) do
+        local tile = state.tiles[key]
+        if present(tile) and not previously_present[key] then
+            self:_push_collisions(state, tile, "right")
         end
     end
 
@@ -1037,7 +1384,10 @@ function Engine:sync(workspace_id, descriptors, area)
 
     self:_materialize(state)
 
-    if self.config.reveal_new and active_key and newly_added[active_key] then
+    self:_activate_row(state, state.focus_key)
+    if state.overview.active then
+        self:fit_all(state)
+    elseif self.config.reveal_new and active_key and newly_added[active_key] then
         self:reveal(state, active_key)
     end
 
@@ -1051,6 +1401,42 @@ function Engine:command(state, message)
     if not command then
         return nil, "grid: empty layout message"
     end
+    if command == "scroll" or command == "scroll-mode" then
+        local changed, reason = self:set_scroll_mode(state, tokens[2] or "toggle")
+        if changed == nil then
+            return nil, reason
+        end
+        return { changed = changed }
+    end
+    if command == "overview" then
+        local action = tokens[2] or "toggle"
+        if action == "focus" then
+            local direction = normalize_direction(tokens[3])
+            if not direction then
+                return nil, "grid: overview focus expects left, right, up, or down"
+            end
+            if not state.overview.active then
+                return { changed = false }
+            end
+            local key = self:focus(state, direction)
+            return { changed = key ~= nil, focus_key = key }
+        elseif action == "enter" then
+            return { changed = self:enter_overview(state) }
+        elseif action == "exit" or action == "activate" then
+            local changed, focus_key = self:leave_overview(state, false)
+            return { changed = changed, focus_key = changed and focus_key or nil }
+        elseif action == "cancel" then
+            local changed, focus_key = self:leave_overview(state, true)
+            return { changed = changed, focus_key = changed and focus_key or nil }
+        elseif action == "toggle" then
+            if state.overview.active then
+                local changed, focus_key = self:leave_overview(state, false)
+                return { changed = changed, focus_key = focus_key }
+            end
+            return { changed = self:enter_overview(state) }
+        end
+        return nil, "grid: overview expects enter, exit, toggle, activate, cancel, or focus"
+    end
 
     if command == "focus" then
         local direction = normalize_direction(tokens[2])
@@ -1061,7 +1447,10 @@ function Engine:command(state, message)
         return { changed = key ~= nil, focus_key = key }
     elseif command == "pan" then
         local direction = normalize_direction(tokens[2])
-        local amount = tokens[3] and tonumber(tokens[3]) or self.config.pan_step
+        local amount = self.config.pan_step
+        if tokens[3] ~= nil then
+            amount = tonumber(tokens[3])
+        end
         if not direction or not numeric(amount) then
             return nil, "grid: pan expects a direction and optional numeric amount"
         end
@@ -1083,7 +1472,10 @@ function Engine:command(state, message)
             return { changed = self:cycle_width(state, cycle_direction) }
         end
 
-        local amount = tokens[3] and tonumber(tokens[3]) or self.config.resize_step
+        local amount = self.config.resize_step
+        if tokens[3] ~= nil then
+            amount = tonumber(tokens[3])
+        end
         if not numeric(amount) or amount == 0 then
             return nil, "grid: resize expects an optional non-zero numeric amount"
         end
@@ -1092,7 +1484,10 @@ function Engine:command(state, message)
         if tokens[2] ~= nil and tokens[2] ~= "width" then
             return nil, "grid: cycle expects width forward or backward"
         end
-        local direction = normalize_cycle(tokens[3]) or "forward"
+        local direction = tokens[3] == nil and "forward" or normalize_cycle(tokens[3])
+        if not direction then
+            return nil, "grid: cycle expects width forward or backward"
+        end
         return { changed = self:cycle_width(state, direction) }
     elseif command == "insert" then
         local mode = tokens[2] and normalize_direction(tokens[2]) or nil
@@ -1138,7 +1533,9 @@ function Engine:set_tile(workspace_id, key, rect, present_value)
     if not state.tiles[key] then
         state.order[#state.order + 1] = key
     end
+    local old_row_id = state.tiles[key] and state.tiles[key].row_id
     state.tiles[key] = make_rect(key, rect.x, rect.y, rect.w, rect.h)
+    state.tiles[key].row_id = old_row_id
     state.tiles[key].present = present_value ~= false
     state.focus_key = state.focus_key or key
     self:_materialize(state)
@@ -1150,12 +1547,13 @@ local function same_row_neighbor(state, source, epsilon)
     for key, tile in pairs(state.tiles) do
         if present(tile)
             and tile ~= source
-            and Geometry.overlap_1d(
+            and (state.scroll_mode == "rows" and tile.row_id == source.row_id
+            or state.scroll_mode == "shared" and Geometry.overlap_1d(
                 source.y,
                 Geometry.bottom(source),
                 tile.y,
                 Geometry.bottom(tile)
-            ) > epsilon
+            ) > epsilon)
         then
             candidates[#candidates + 1] = { key = key, tile = tile }
         end
@@ -1236,11 +1634,11 @@ end
 
 
 
-local function delete_empty_row(state, removed, epsilon)
+local function delete_empty_row(state, removed, epsilon, row_gap)
     local row_bottom = Geometry.bottom(removed)
     for _, tile in pairs(state.tiles) do
         if present(tile) and tile.y >= row_bottom - epsilon then
-            tile.y = tile.y - removed.h
+            tile.y = tile.y - removed.h - row_gap
         end
     end
 end
@@ -1260,7 +1658,7 @@ function Engine:_compact_around(state, removed, delete_row)
 
     compact_horizontal_gap(state, removed, epsilon)
     if delete_row then
-        delete_empty_row(state, removed, epsilon)
+        delete_empty_row(state, removed, epsilon, self.config.row_gap)
     end
 
     local valid = Geometry.assert_non_overlapping(state.tiles, epsilon)
@@ -1304,7 +1702,16 @@ function Engine:forget_window(key, keep_workspace_id)
                 reveal_key = state.focus_key
             end
             if reveal_key then
-                self:reveal(state, reveal_key)
+                if state.scroll_mode == "rows"
+                    and (not next_focus or state.tiles[reveal_key].row_id ~= removed.row_id)
+                then
+                    self:_reveal_vertical(state, reveal_key)
+                else
+                    self:reveal(state, reveal_key)
+                end
+            end
+            if state.overview.active then
+                self:fit_all(state)
             end
         end
     end

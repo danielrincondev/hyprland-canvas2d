@@ -1,0 +1,170 @@
+diff --git i/scrollOverview.cpp w/scrollOverview.cpp
+index b4db2d5..d7fd4f8 100644
+--- i/scrollOverview.cpp
++++ w/scrollOverview.cpp
+@@ -71,6 +71,7 @@
+ 
+ static PHLWINDOW getOverviewFullscreenVisibilityWindow(const PHLWORKSPACE& workspace, const PHLWINDOW& fallback = {});
+ static constexpr const char* OVERVIEW_SUBMAP = "scrolloverview";
++static constexpr const char* OVERVIEW_LAYER_SUBMAP = "scrolloverview-layer";
+ static constexpr auto        POST_DROP_PSEUDO_FOCUS_DURATION = std::chrono::milliseconds(100);
+ static CScrollOverview*             g_pointerGrabOverview = nullptr;
+ static bool                         g_finishingAdoptedNativeDrag    = false;
+@@ -1447,35 +1448,29 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
+ 
+         info.cancelled = true;
+ 
+-        const auto ACTION = e.axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL ? ScrollOverview::Config::getHorizontalScrollAction(layout) :
+-                                                                          ScrollOverview::Config::getVerticalScrollAction(layout);
+-
+-        // mouse wheel: discrete stepping, throttled by scroll_event_delay so one notch is one step
++        // Grid rows live inside a workspace. Scrolling selects their windows;
++        // it must never advance to another workspace at a canvas edge.
++        if (e.delta == 0.0)
++            return;
++        const auto DIRECTION = e.axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL ?
++            (e.delta > 0 ? "right" : "left") : (e.delta > 0 ? "down" : "up");
+         if (e.source == WL_POINTER_AXIS_SOURCE_WHEEL) {
+-            if (e.delta == 0.0)
+-                return;
+             trackpadScrollAccum        = 0.0;
+             trackpadWorkspaceFollowing = false;
+             trackpadTapeFollowing      = false;
+             if (!scrollStepAllowed(e.timeMs))
+                 return;
+-
+-            if (ACTION == ScrollOverview::Config::EScrollAction::WORKSPACE)
+-                moveViewportWorkspace(e.delta > 0);
+-            else
+-                moveScrollingColumnSelection(e.delta > 0);
+-
++            moveSelection(DIRECTION);
+             return;
+         }
+-
+-        if (images.empty() || viewportCurrentWorkspace >= images.size())
+-            return;
+-
+-        // scroll workspace or layout with 1:1 animation (snaping on release)
+-        if (ACTION == ScrollOverview::Config::EScrollAction::WORKSPACE)
+-            trackpadSwipeWorkspace(e.delta);
+-        else
+-            trackpadSwipeLayout(images[viewportCurrentWorkspace]->pWorkspace, e.delta);
++        // Accumulate small touchpad deltas instead of stepping per event.
++        if ((trackpadScrollAccum > 0) != (e.delta > 0))
++            trackpadScrollAccum = 0.0;
++        trackpadScrollAccum += e.delta;
++        if (std::abs(trackpadScrollAccum) >= 40.0 && scrollStepAllowed(e.timeMs)) {
++            trackpadScrollAccum = 0.0;
++            moveSelection(DIRECTION);
++        }
+     };
+ 
+     auto onWindowOpen = [this](PHLWINDOW) {
+@@ -1608,6 +1603,17 @@ CScrollOverview::CScrollOverview(PHLWORKSPACE startedOn_, bool swipe_, PHLMONITO
+     workspaceCreatedHook = Event::bus()->m_events.workspace.created.listen(onWorkspaceLifecycle);
+     workspaceRemovedHook = Event::bus()->m_events.workspace.removed.listen(onWorkspaceLifecycle);
+     activateSubmapIfConfigured();
++    auto syncLayerKeyboardFocus = [this](auto) {
++        if (closing || !sharedStateOwner || !usesSubmapKeybinds || !submapActive || !g_pKeybindManager)
++            return;
++        const auto CURRENT = g_pKeybindManager->getCurrentSubmap().name;
++        if (isTopLayerFocused(pMonitor.lock()) && CURRENT == OVERVIEW_SUBMAP)
++            (void)Config::Actions::setSubmap(OVERVIEW_LAYER_SUBMAP);
++        else if (!isTopLayerFocused(pMonitor.lock()) && CURRENT == OVERVIEW_LAYER_SUBMAP)
++            (void)Config::Actions::setSubmap(OVERVIEW_SUBMAP);
++    };
++    keyboardFocusHook = Event::bus()->m_events.input.keyboard.focus.listen(syncLayerKeyboardFocus);
++    syncLayerKeyboardFocus(nullptr);
+     if (!usesSubmapKeybinds)
+         keyboardKeyHook = Event::bus()->m_events.input.keyboard.key.listen(onKeyboardKey);
+ 
+@@ -3755,8 +3761,8 @@ bool CScrollOverview::moveSelection(const std::string& direction) {
+         const float SECONDARYDISTANCE =
+             MOVINGLEFT || MOVINGRIGHT ? std::abs(WINDOWCENTER.y - CURRENTCENTER.y) : std::abs(WINDOWCENTER.x - CURRENTCENTER.x);
+ 
+-        if ((MOVINGUP || MOVINGDOWN) && !HASOVERLAP)
+-            continue;
++        // Independently scrolled rows need not overlap horizontally. Prefer
++        // overlap below, but allow the nearest row as a fallback.
+ 
+         if (!bestCandidate) {
+             bestCandidate         = WINDOW;
+@@ -3802,11 +3808,7 @@ bool CScrollOverview::moveSelection(const std::string& direction) {
+         shouldMoveWorkspace = true;
+ 
+     if (shouldMoveWorkspace) {
+-        if (((MOVINGLEFT || MOVINGRIGHT) && layout != ScrollOverview::Config::ELayout::HORIZONTAL) || ((MOVINGUP || MOVINGDOWN) && layout == ScrollOverview::Config::ELayout::HORIZONTAL))
+-            return false;
+-
+-        moveViewportWorkspace(MOVINGRIGHT || MOVINGDOWN);
+-        return true;
++        return false;
+     }
+ 
+     closeOnWindow = bestCandidate;
+@@ -5015,6 +5017,14 @@ void CScrollOverview::close(ECloseMode mode) {
+     const bool PRESERVEMONITORSTATE = mode == ECloseMode::PRESERVE_MONITOR_STATE;
+     const bool ACTIVATESELECTION    = !PRESERVEMONITORSTATE && activeScrollOverview().get() == this;
+     const auto MONITOR              = pMonitor.lock();
++    // Outputs can disappear while the overview is open. There is no scene to
++    // animate back into once the monitor has gone away.
++    if (!MONITOR) {
++        setClosing(true);
++        removeOverview(this);
++        return;
++    }
++
+     const auto SELECTEDWORKSPACE    = PRESERVEMONITORSTATE ?
+         (MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{}) :
+         (viewportCurrentWorkspace < images.size() && images[viewportCurrentWorkspace] ? images[viewportCurrentWorkspace]->pWorkspace : PHLWORKSPACE{});
+@@ -5428,6 +5438,7 @@ void CScrollOverview::releaseInputListeners() {
+     mouseButtonHook.reset();
+     touchDownHook.reset();
+     keyboardKeyHook.reset();
++    keyboardFocusHook.reset();
+     dragKeyboardKeyHook.reset();
+ }
+ 
+@@ -5437,14 +5448,8 @@ void CScrollOverview::activateSubmapIfConfigured() {
+ 
+     previousSubmapName = g_pKeybindManager->getCurrentSubmap().name;
+ 
+-    const auto DISPATCHER = g_pKeybindManager->m_dispatchers.find("submap");
+-    if (DISPATCHER == g_pKeybindManager->m_dispatchers.end()) {
+-        usesSubmapKeybinds = false;
+-        return;
+-    }
+-
+-    const auto RESULT = DISPATCHER->second(OVERVIEW_SUBMAP);
+-    if (!RESULT.success) {
++    const auto RESULT = Config::Actions::setSubmap(OVERVIEW_SUBMAP);
++    if (!RESULT) {
+         usesSubmapKeybinds = false;
+         return;
+     }
+@@ -5457,10 +5462,8 @@ void CScrollOverview::restoreSubmapIfActive() {
+         return;
+ 
+     const auto CURRENT = g_pKeybindManager->getCurrentSubmap().name;
+-    if (CURRENT == OVERVIEW_SUBMAP) {
+-        const auto DISPATCHER = g_pKeybindManager->m_dispatchers.find("submap");
+-        if (DISPATCHER != g_pKeybindManager->m_dispatchers.end())
+-            DISPATCHER->second(previousSubmapName.empty() ? "reset" : previousSubmapName);
++    if (CURRENT == OVERVIEW_SUBMAP || CURRENT == OVERVIEW_LAYER_SUBMAP) {
++        Config::Actions::setSubmap(previousSubmapName.empty() ? "reset" : previousSubmapName);
+     }
+ 
+     submapActive = false;
+diff --git i/scrollOverview.hpp w/scrollOverview.hpp
+index 0535fdc..b0f02dd 100644
+--- i/scrollOverview.hpp
++++ w/scrollOverview.hpp
+@@ -314,6 +314,7 @@ class CScrollOverview : public IOverview {
+     CHyprSignalListener             windowActiveHook;
+     CHyprSignalListener             windowFullscreenHook;
+     CHyprSignalListener             keyboardKeyHook;
++    CHyprSignalListener             keyboardFocusHook;
+     CHyprSignalListener                                dragKeyboardKeyHook;
+     CHyprSignalListener             workspaceCreatedHook;
+     CHyprSignalListener             workspaceRemovedHook;

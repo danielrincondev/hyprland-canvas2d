@@ -2,7 +2,7 @@ LUA ?= lua
 XDG_CONFIG_HOME ?= $(HOME)/.config
 INSTALL_DIR ?= $(XDG_CONFIG_HOME)/hypr/grid
 
-.PHONY: all test verify benchmark install
+.PHONY: all test verify benchmark install install-native-overview
 
 all: test
 
@@ -19,3 +19,6 @@ install:
 	mkdir -p "$(INSTALL_DIR)"
 	cp -R hypr/grid/. "$(INSTALL_DIR)/"
 	@printf 'Installed grid in %s\n' "$(INSTALL_DIR)"
+
+install-native-overview: install
+	bash native/install.sh

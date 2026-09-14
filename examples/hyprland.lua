@@ -9,8 +9,10 @@ local grid = require("grid").setup({
     pan_step = 300,
     resize_step = 60,
     viewport_margin = 0,
+    row_gap = 48,
     insertion = "auto",
     auto_reveal = true,
+    scroll_mode = "rows", -- default; use "shared" for one workspace canvas
 })
 
 -- Hyprland 0.56 workspace-specific layout rules.
@@ -75,9 +77,22 @@ for key, direction in pairs(vim_directions) do
 end
 
 -- Viewport utilities. Change these keys freely.
+-- Toggle only the current grid workspace between independent rows and a
+-- shared 2D canvas. Row scroll positions survive the round trip.
+hl.bind("SUPER + CTRL + SHIFT + S", grid.command("scroll toggle"))
 hl.bind("SUPER + CTRL + C", grid.command("center focused"))
 hl.bind("SUPER + CTRL + F", grid.command("fit all"))
 hl.bind("SUPER + CTRL + R", grid.command("reset viewport"))
+
+-- Stateful active-workspace overview. Existing spatial focus binds select
+-- windows without disturbing the fit. Toggle activates the selected window;
+-- the second bind cancels and restores the original focus and viewport.
+hl.bind("SUPER + CTRL + O", grid.command("overview toggle"))
+hl.bind("SUPER + CTRL + SHIFT + O", grid.command("overview cancel"))
+
+-- Native animated zoom-out after `make install-native-overview`.
+-- This replaces SUPER+TAB (normally next workspace).
+-- require("grid.native_overview").setup({ scale = 0.30 })
 
 -- Per-workspace insertion policy for subsequently opened tiled windows.
 hl.bind("SUPER + CTRL + A", grid.command("insert auto"))

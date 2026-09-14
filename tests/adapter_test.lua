@@ -147,6 +147,35 @@ return function(T)
         T.truthy(right.window.active)
     end)
 
+    T.case("adapter keeps row scrolling through focus dispatch and mode toggles", function()
+        local owner = workspace(111)
+        local a = target(6101, true, owner)
+        local b = target(6102, false, owner)
+        local c = target(6103, false, owner)
+        local ctx = context(owner, { a, b, c })
+        provider.recalculate(ctx)
+        local state = grid.engine.workspaces["111"]
+        state.focus_key = "window:6103"
+        grid.engine:move(state, "down")
+        provider.layout_msg(ctx, "focus right")
+        provider.layout_msg(ctx, "pan right 125")
+        provider.layout_msg(ctx, "focus down")
+        provider.layout_msg(ctx, "pan right 77")
+        provider.recalculate(ctx)
+        T.near(a.placed.x, -125)
+        T.near(c.placed.x, -77)
+        provider.layout_msg(ctx, "focus up")
+        T.equal(dispatched[#dispatched].window, b.window)
+        T.near(state.viewport.x, 125)
+        provider.layout_msg(ctx, "scroll toggle")
+        provider.recalculate(ctx)
+        T.near(a.placed.x, -125)
+        T.near(c.placed.x, -125)
+        provider.layout_msg(ctx, "scroll toggle")
+        provider.recalculate(ctx)
+        T.near(c.placed.x, -77)
+    end)
+
     T.case("click focus event keeps a row's left edge flush", function()
         local owner = workspace(103)
         local near = target(3001, false, owner)
@@ -161,6 +190,39 @@ return function(T)
 
         handlers["window.active"][1](near.window, 0)
         T.near(state.viewport.x, 0)
+    end)
+
+    T.case("adapter overview focus and cancel dispatch real focus changes", function()
+        local owner = workspace(111)
+        local left = target(3101, true, owner)
+        local middle = target(3102, false, owner)
+        local right = target(3103, false, owner)
+        local ctx = context(owner, { left, middle, right }, { x = 0, y = 0, w = 500, h = 400 })
+        provider.recalculate(ctx)
+        local state = grid.engine.workspaces["111"]
+        state.viewport.x = 125
+        state.viewport.y = 40
+
+        grid.command("overview enter")()
+        T.truthy(state.overview.active)
+        local fitted_x = state.viewport.x
+        local fitted_scale = state.viewport.scale
+
+        grid.command("focus right")()
+        T.equal(dispatched[#dispatched].kind, "focus")
+        T.equal(dispatched[#dispatched].window, middle.window)
+        T.truthy(middle.window.active)
+        T.near(state.viewport.x, fitted_x)
+        T.near(state.viewport.scale, fitted_scale)
+
+        grid.command("overview cancel")()
+        T.equal(dispatched[#dispatched].kind, "focus")
+        T.equal(dispatched[#dispatched].window, left.window)
+        T.truthy(left.window.active)
+        T.falsy(state.overview.active)
+        T.near(state.viewport.x, 125)
+        T.near(state.viewport.y, 40)
+        T.near(state.viewport.scale, 1)
     end)
 
     T.case("mixed-layout command falls back outside grid workspaces", function()
@@ -214,9 +276,9 @@ return function(T)
         local ctx = context(owner, { top, bottom })
         provider.recalculate(ctx)
         local state = grid.engine.workspaces["110"]
-        state.tiles["window:5202"].x = 0
-        state.tiles["window:5202"].y = state.tiles["window:5201"].h
-        grid.engine:_materialize(state)
+        state.focus_key = "window:5202"
+        grid.engine:move(state, "down")
+        grid.engine:focus(state, "up")
         local dispatch_count = #dispatched
 
         handlers["window.close"][1](top.window)
