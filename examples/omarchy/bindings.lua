@@ -93,7 +93,7 @@ local native_overview = require("grid.native_overview")
 --   press a workspace key  move the focused window there, following it
 -- The move is silent so the zoom transition, not Hyprland, does the switching.
 local MOVE_SUBMAP = "move-window"
-local move_handled = false
+local move_mode_armed = false
 
 -- Jump to the previously focused window, following it to its workspace.
 local function focus_last_window()
@@ -106,13 +106,13 @@ local function focus_last_window()
 end
 
 local function arm_move_mode()
-  move_handled = false
+  move_mode_armed = true
   hl.dispatch(hl.dsp.submap(MOVE_SUBMAP))
 end
 
 local function move_window_to(number)
   return function()
-    move_handled = true
+    move_mode_armed = false
     hl.dispatch(hl.dsp.submap("reset"))
     hl.dispatch(hl.dsp.window.move({ workspace = tostring(number), follow = false }))
     native_overview.switch_workspace(number)()
@@ -120,14 +120,12 @@ local function move_window_to(number)
 end
 
 local function leave_move_mode()
-  local handled = move_handled
-  move_handled = false
-  -- Focus before leaving the submap: the reset otherwise lands first and the
-  -- focus dispatch is dropped.
-  if not handled then
-    focus_last_window()
-  end
+  -- The release bindings are universal, so ignore ordinary Alt releases and
+  -- releases after a workspace move or Escape has already completed the mode.
+  if not move_mode_armed then return end
+  move_mode_armed = false
   hl.dispatch(hl.dsp.submap("reset"))
+  focus_last_window()
 end
 
 hl.define_submap(MOVE_SUBMAP, function()
@@ -141,14 +139,18 @@ hl.define_submap(MOVE_SUBMAP, function()
     hl.bind(cluster.last_window, function() end, { ignore_mods = true })
   end
   -- Releasing either Alt ends the mode; with no workspace key pressed it
-  -- means plain Alt+Tab: go to the last focused window.  Hyprland only matches
-  -- these by key code (64 = left Alt, 108 = right Alt); keysyms never fire.
+  -- means plain Alt+Tab: go to the last focused window. Hyprland 0.56 matches
+  -- releases against the submap at KEY PRESS, before Tab arms this submap.
+  -- Universal matching is therefore required on the first Alt release.
   for _, modifier in ipairs({ "code:64", "code:108" }) do
-    hl.bind(modifier, leave_move_mode, { release = true, ignore_mods = true })
+    hl.bind(modifier, leave_move_mode, {
+      release = true, ignore_mods = true, submap_universal = true,
+      non_consuming = true,
+    })
   end
   -- No catchall here: the arming key's own event would trip it immediately.
   hl.bind("ESCAPE", function()
-    move_handled = true
+    move_mode_armed = false
     hl.dispatch(hl.dsp.submap("reset"))
   end, { ignore_mods = true })
 end)
