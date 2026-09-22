@@ -10,7 +10,10 @@ function M.switch_workspace(workspace)
     return function()
         local overview = hl.plugin and hl.plugin.scrolloverview
         if overview and overview.zoomswitch then
-            overview.zoomswitch(workspace)()
+            -- Inside a keybind the plugin dispatches immediately and returns
+            -- nothing; elsewhere it returns a bind action to call.
+            local action = overview.zoomswitch(workspace)
+            if type(action) == "function" then action() end
         else
             hl.dispatch(hl.dsp.focus({ workspace = workspace }))
         end
