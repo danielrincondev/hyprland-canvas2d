@@ -52,6 +52,7 @@ function M.setup(options)
     local overview = hl.plugin.scrolloverview
     local grid = require("grid").setup()
     local menu = hl.dsp.exec_cmd(options.menu_command or "omarchy menu toggle")
+    local menu_key = options.menu_key or "SUPER + SPACE"
     local key = options.key or "SUPER + TAB"
     -- Unbind before defining the submap: hl.unbind also removes matching
     -- shortcuts inside submaps.
@@ -59,7 +60,7 @@ function M.setup(options)
     -- A keyboard-focused launcher owns its input until it closes. The native
     -- focus listener switches here and restores overview capture afterwards.
     hl.define_submap("scrolloverview-layer", function()
-        hl.bind("SUPER + SPACE", menu)
+        hl.bind(menu_key, menu)
     end)
     hl.define_submap("scrolloverview", function()
         for key, direction in pairs({
@@ -78,7 +79,22 @@ function M.setup(options)
         for number = 1, 10 do
             hl.bind("SUPER + " .. (number % 10), hl.dsp.focus({ workspace = tostring(number) }))
         end
-        hl.bind("SUPER + SPACE", menu)
+        -- Optional modifier clusters, e.g. { mod = "ALT", directions =
+        -- { up = "W", ... }, workspaces = { "1", ... } }: mod+key navigates,
+        -- mod+SHIFT+key moves the window, mod+workspace key pans there.
+        for _, cluster in ipairs(options.clusters or {}) do
+            for direction, cluster_key in pairs(cluster.directions or {}) do
+                local navigate = grid.overview_navigate(direction, function() overview.navigate(direction) end)
+                hl.bind(cluster.mod .. " + " .. cluster_key, navigate, { repeating = true })
+                hl.bind(cluster.mod .. " + SHIFT + " .. cluster_key,
+                    grid.command("move " .. direction, hl.dsp.window.swap({ direction = direction })),
+                    { repeating = true })
+            end
+            for number, workspace_key in ipairs(cluster.workspaces or {}) do
+                hl.bind(cluster.mod .. " + " .. workspace_key, hl.dsp.focus({ workspace = tostring(number) }))
+            end
+        end
+        hl.bind(menu_key, menu)
         -- `select` means select under the pointer in this plugin. Closing
         hl.bind("SUPER + CTRL + SHIFT + P", grid.command("share toggle"))
         -- commits the keyboard selection without replacing it with a hover.
