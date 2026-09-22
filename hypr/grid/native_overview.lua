@@ -44,8 +44,9 @@ function M.setup(options)
         }) do
             -- Exact modifier matches keep move-window chords from also
             -- firing the select-window binding.
-            hl.bind(key, overview.navigate(direction), { repeating = true })
-            hl.bind("SUPER + " .. key, overview.navigate(direction), { repeating = true })
+            local navigate = grid.overview_navigate(direction, function() overview.navigate(direction) end)
+            hl.bind(key, navigate, { repeating = true })
+            hl.bind("SUPER + " .. key, navigate, { repeating = true })
             hl.bind("SUPER + SHIFT + " .. key,
                 grid.command("move " .. direction, hl.dsp.window.swap({ direction = direction })),
                 { repeating = true })
@@ -55,6 +56,7 @@ function M.setup(options)
         end
         hl.bind("SUPER + SPACE", menu)
         -- `select` means select under the pointer in this plugin. Closing
+        hl.bind("SUPER + CTRL + SHIFT + P", grid.command("share toggle"))
         -- commits the keyboard selection without replacing it with a hover.
         hl.bind("RETURN", overview.overview("close"), { ignore_mods = true })
         hl.bind("ESCAPE", overview.overview("close"), { ignore_mods = true })

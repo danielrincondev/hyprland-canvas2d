@@ -59,6 +59,7 @@ hl.bind("SUPER + C", grid.command("center focused"))
 hl.bind("SUPER + F", grid.command("fit all"))
 hl.bind("SUPER + R", grid.command("reset viewport"))
 hl.bind("SUPER + CTRL + SHIFT + S", grid.command("scroll toggle"))
+hl.bind("SUPER + CTRL + SHIFT + P", grid.command("share toggle"))
 local native_plugin = os.getenv("GRID_NATIVE_OVERVIEW")
 if native_plugin then
     require("grid.native_overview").setup({ path = native_plugin })

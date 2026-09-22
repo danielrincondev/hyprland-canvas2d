@@ -1,4 +1,6 @@
 local Engine = require("grid.engine")
+local Shared = require("grid.shared")
+local Session = require("grid.session")
 
 local Grid = {}
 local active_api
@@ -65,16 +67,70 @@ function Grid.setup(options)
     end
 
     local engine = Engine.new(options)
+    local shared = Shared.new(engine)
+    local session_path = hl.version and Session.path() or nil
+    local saved_session = Session.read(session_path)
+    if saved_session then
+        local original = shared:checkpoint()
+        local restored = pcall(function()
+            assert(type(saved_session.next_id) == "number" and type(saved_session.rows) == "table")
+            shared:rollback(saved_session)
+            for _, state in pairs(engine.workspaces) do
+                engine:_materialize(state)
+                assert(engine:validate(state))
+            end
+            shared:refresh()
+        end)
+        if not restored then shared:rollback(original) end
+    end
     local layout_name = "lua:" .. engine.config.layout_name
     local subscriptions = {}
     local suppress_auto_reveal = false
     local references_by_workspace = {}
+    local moving_shared = false
+    local shared_timer
+    local save_timer
+
+    local function save_session()
+        for _, state in pairs(engine.workspaces) do engine:_save_row_view(state) end
+        local ok, reason = pcall(Session.write, session_path, shared:checkpoint())
+        if not ok then print("grid: could not save reload state: " .. tostring(reason)) end
+    end
+
+    local function schedule_save()
+        if session_path and not save_timer and not moving_shared then
+            save_timer = hl.timer(function()
+                save_timer = nil
+                save_session()
+            end, { timeout = 10, type = "oneshot" })
+        end
+    end
+
+    local function notify(text)
+        if hl.notification then hl.notification.create({ text = text, timeout = 2200 }) end
+    end
+
+    local function clear_empty_focus(state)
+        if not (state and state.empty_row and state.empty_row.selected) then return end
+        local native = hl.plugin and hl.plugin.scrolloverview
+        if native and native.empty_row then
+            native.empty_row()
+        else
+            engine:focus(state, "up")
+            notify("Rebuild the native overview plugin to enter an empty row")
+        end
+    end
 
     local function sync_context(ctx)
         local descriptors, references = context_descriptors(ctx)
         local workspace_id = context_workspace_id(ctx)
-        local state = engine:sync(workspace_id, descriptors, ctx.area)
+        -- Window moves trigger intermediate layout callbacks. The complete
+        -- row model is already transferred; don't reinsert departing targets.
+        local state = moving_shared and engine:workspace(workspace_id, ctx.area)
+            or engine:sync(workspace_id, descriptors, ctx.area)
         references_by_workspace[workspace_id] = references
+        if not moving_shared then shared:refresh() end
+        schedule_save()
         return state, references
     end
 
@@ -99,8 +155,23 @@ function Grid.setup(options)
         end,
 
         layout_msg = function(ctx, message)
+            if moving_shared then return true end
             local state, references = sync_context(ctx)
-            local result, command_error = engine:command(state, message)
+            local result, command_error
+            local action, scope = message:match("^share%s+(%S+)%s*(.-)%s*$")
+            if message == "shared-refresh" then
+                result = { changed = true }
+            elseif action or message == "share" then
+                local ws = hl.get_active_special_workspace and hl.get_active_special_workspace()
+                if ws then return "grid: shared rows require a normal workspace" end
+                result, command_error = shared:toggle(state, action, scope ~= "" and scope or nil)
+                if result and result.changed then
+                    notify(result.shared and "Row shared across grid workspaces" or "Row is local to this workspace")
+                elseif command_error then notify(command_error) end
+            else
+                result, command_error = engine:command(state, message)
+                shared:refresh()
+            end
             if not result then
                 return command_error
             end
@@ -115,6 +186,9 @@ function Grid.setup(options)
                     end
                 end
             end
+            if result.clear_focus then clear_empty_focus(state) end
+
+            if session_path then save_session() end
 
             return true
         end,
@@ -124,6 +198,7 @@ function Grid.setup(options)
 
     local api = {
         engine = engine,
+        shared = shared,
         layout = layout_name,
         provider = provider,
         subscriptions = subscriptions,
@@ -151,11 +226,109 @@ function Grid.setup(options)
         end
     end
 
+    function api.overview_navigate(direction, fallback)
+        return function()
+            local ws = hl.get_active_workspace()
+            local state = ws and engine.workspaces[tostring(ws.id)]
+            if api.is_active() and state and state.empty_row then
+                local tile = state.tiles[state.focus_key]
+                local last = state.rows[#state.rows]
+                if state.empty_row.selected or (direction == "down" and tile and last and tile.row_id == last.id) then
+                    return hl.dispatch(hl.dsp.layout("focus " .. direction))
+                end
+            end
+            return fallback()
+        end
+    end
+
+    local function move_shared_rows()
+        shared_timer = nil
+        local workspace = hl.get_active_workspace()
+        if moving_shared or not workspace or workspace.special or not workspace_uses_layout(workspace, layout_name)
+            or (hl.get_active_special_workspace and hl.get_active_special_workspace()) then return end
+        local records = shared:pending(workspace.id)
+        if #records == 0 then clear_empty_focus(engine.workspaces[tostring(workspace.id)]); return end
+        local windows = {}
+        for _, window in ipairs(hl.get_windows()) do
+            if window.mapped and not window.floating and not window.group then
+                windows[target_key({ window = window })] = window
+            end
+        end
+        local saved = shared:checkpoint()
+        local destination = engine:workspace(workspace.id)
+        local originals = {}
+        moving_shared, suppress_auto_reveal = true, true
+        local ok, reason = pcall(function()
+            for _, record in ipairs(records) do
+                local source_id = record.workspace_id
+                local source = engine.workspaces[source_id]
+                -- Validate the complete row before changing any ownership.
+                for _, row in ipairs(source.rows) do
+                    if row.id == record.row_id then
+                        for _, cell in ipairs(row.cells) do
+                            assert(windows[cell.key], "shared window is no longer tiled; retry after the layout updates")
+                            originals[#originals + 1] = { key = cell.key, window = windows[cell.key], source = source_id }
+                        end
+                    end
+                end
+                local entries = shared:transfer(record, destination)
+                for _, entry in ipairs(entries) do
+                    local window = windows[entry.key]
+                    hl.dispatch(hl.dsp.window.move({ window = window, workspace = tostring(workspace.id), follow = false }))
+                    assert(window.workspace and tostring(window.workspace.id) == destination.id, "window move failed")
+                end
+            end
+        end)
+        if not ok then
+            for i = #originals, 1, -1 do
+                local item = originals[i]
+                if item.window.workspace and tostring(item.window.workspace.id) ~= item.source then
+                    pcall(function()
+                        hl.dispatch(hl.dsp.window.move({ window = item.window, workspace = item.source, follow = false }))
+                    end)
+                end
+            end
+            shared:rollback(saved)
+            -- If a client vanished or refused rollback, remove its old model
+            -- entry. The next context inserts it wherever it actually lives.
+            for _, item in ipairs(originals) do
+                local actual = item.window.workspace and item.window.workspace.id
+                if not actual or tostring(actual) ~= item.source then engine:forget_window(item.key, actual) end
+            end
+            shared:refresh()
+            notify("Could not move shared row: " .. tostring(reason))
+        end
+        moving_shared, suppress_auto_reveal = false, false
+        local state = engine.workspaces[tostring(workspace.id)]
+        local focus = state and windows[state.focus_key]
+        if focus then dispatch_focus(focus) end
+        clear_empty_focus(state)
+        -- Also recalculate an empty destination after the transaction ends.
+        hl.dispatch(hl.dsp.layout("shared-refresh"))
+    end
+
+    local function schedule_shared_rows()
+        if moving_shared or shared_timer or not next(shared.rows) then return end
+        -- Coalesce workspace/monitor events and resolve the final active
+        -- workspace after Hyprland has finished switching and restoring focus.
+        shared_timer = hl.timer(move_shared_rows, { timeout = 1, type = "oneshot" })
+    end
+
     if hl.on then
         if engine.config.auto_reveal then
-            subscriptions[#subscriptions + 1] = hl.on("window.active", function(window)
+            subscriptions[#subscriptions + 1] = hl.on("window.active", function(window, reason)
                 if suppress_auto_reveal or not window or window.floating or not api.is_active(window) then
                     return
+                end
+                local state = engine.workspaces[tostring(window.workspace.id)]
+                if state and state.empty_row and state.empty_row.selected then
+                    -- Focus restoration and mouse-follow during a slide must
+                    -- not send input back into an offscreen shared window.
+                    if reason == 1 or reason == 7 or reason == 11 then
+                        hl.timer(function() clear_empty_focus(state) end, { timeout = 1, type = "oneshot" })
+                        return
+                    end
+                    state.empty_row.selected = false
                 end
                 hl.dispatch(hl.dsp.layout("reveal"))
             end)
@@ -181,6 +354,8 @@ function Grid.setup(options)
                 and tostring(window.workspace.id)
                 or nil
             local next_key = engine:forget_window(key)
+            shared:refresh()
+            schedule_save()
             if not next_key then
                 return
             end
@@ -201,7 +376,7 @@ function Grid.setup(options)
         end)
 
         subscriptions[#subscriptions + 1] = hl.on("window.move_to_workspace", function(window, workspace)
-            if not window or not workspace then
+            if moving_shared or not window or not workspace then
                 return
             end
             local key
@@ -214,10 +389,13 @@ function Grid.setup(options)
             end
             if key then
                 engine:forget_window(key, workspace.id)
+                shared:refresh()
+                schedule_save()
             end
         end)
 
         subscriptions[#subscriptions + 1] = hl.on("workspace.removed", function()
+            if moving_shared then return end
             local live_ids = {}
             if hl.get_workspaces then
                 for _, workspace in ipairs(hl.get_workspaces()) do
@@ -227,6 +405,15 @@ function Grid.setup(options)
                 end
             end
             engine:prune_workspaces(live_ids)
+            shared:refresh()
+            schedule_save()
+        end)
+        subscriptions[#subscriptions + 1] = hl.on("workspace.active", schedule_shared_rows)
+        subscriptions[#subscriptions + 1] = hl.on("monitor.focused", schedule_shared_rows)
+        subscriptions[#subscriptions + 1] = hl.on("workspace.special_active", schedule_shared_rows)
+        subscriptions[#subscriptions + 1] = hl.on("config.reloaded", schedule_shared_rows)
+        subscriptions[#subscriptions + 1] = hl.on("hyprland.shutdown", function()
+            if session_path then os.remove(session_path) end
         end)
     end
 

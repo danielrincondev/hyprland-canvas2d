@@ -19,6 +19,8 @@ hypr/grid/
 ├── init.lua       Hyprland provider, event subscriptions, dispatcher adapter
 ├── engine.lua     workspace state, insertion, movement, resize, lifecycle
 ├── geometry.lua   rectangle predicates, directional neighbors, viewport math
+├── shared.lua     shared-row ownership, workspace scopes and atomic transfers
+├── session.lua    data checkpoints that preserve layout across config reloads
 └── native_overview.lua  optional native plugin configuration and input submaps
 native/
 ├── install.sh           pinned upstream build and versioned library installation
@@ -149,6 +151,28 @@ layout_msg(ctx, message)
 ```
 
 The provider never places a target absent from the current context. Floating and fullscreen behavior remains compositor-owned.
+
+## Shared row ownership
+
+`shared.lua` manages stable shared-row IDs and workspace scopes. Shared rows form a stable prefix
+above local rows in every workspace, ordered by their shared-row IDs. Each shared row still belongs to exactly one engine workspace. A
+transfer detaches and compacts the source row, inserts its unchanged rectangles
+at the top of the destination, and carries horizontal scroll and row focus memory.
+Existing destination focus and its vertical screen position are preserved.
+
+The adapter coalesces workspace/monitor events with a one-shot timer. It resolves
+the final active normal grid workspace and moves each real window silently.
+Intermediate compositor layout callbacks use the prepared model without syncing
+partially moved target lists. On failure it attempts to return all moved windows
+and restores the checkpoint, reconciling any client that could not return.
+
+`session.lua` stores a length-prefixed data checkpoint in the private runtime
+directory. The filename includes the actual process PID and start time, so
+configuration verification and other compositor instances cannot consume the
+live desktop's state. State is written after layout commands and coalesced
+lifecycle changes, restored across config reloads, and removed on shutdown.
+It contains only layout geometry and membership, not executable Lua or app
+content. This is session state, not a persistent rule for newly launched apps.
 
 ## Native overview flow
 

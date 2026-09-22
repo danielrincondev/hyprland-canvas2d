@@ -6,6 +6,8 @@ return function(T)
     local active_workspace
     local current_context
     local dispatched = {}
+    local all_targets, timers = {}, {}
+    local fail_move_on, move_count
 
     local function workspace(id, layout)
         local value = {
@@ -22,6 +24,7 @@ return function(T)
             address = "0x" .. tostring(id),
             active = is_active == true,
             floating = false,
+            mapped = true,
             workspace = owner,
             group = nil,
         }
@@ -34,6 +37,7 @@ return function(T)
             self.placed = box
             self.box = box
         end
+        all_targets[id] = value
         return value
     end
 
@@ -54,6 +58,7 @@ return function(T)
             end,
         },
         dsp = {
+            window = { move = function(options) return { kind = "move", options = options } end },
             focus = function(options)
                 return { kind = "focus", window = options.window }
             end,
@@ -70,6 +75,21 @@ return function(T)
                     end
                 end
                 return true
+            elseif action.kind == "move" then
+                move_count = (move_count or 0) + 1
+                if move_count == fail_move_on then error("simulated move failure") end
+                local options = action.options
+                local destination = workspaces[options.workspace] or workspace(tonumber(options.workspace))
+                options.window.workspace = destination
+                handlers["window.move_to_workspace"][1](options.window, destination)
+                current_context.targets = {}
+                for _, item in pairs(all_targets) do
+                    if item.window.workspace == active_workspace then
+                        current_context.targets[#current_context.targets + 1] = item
+                    end
+                end
+                provider.recalculate(current_context)
+                return true
             elseif action.kind == "layout" then
                 local result = provider.layout_msg(current_context, action.message)
                 provider.recalculate(current_context)
@@ -81,6 +101,15 @@ return function(T)
             handlers[name] = handlers[name] or {}
             handlers[name][#handlers[name] + 1] = handler
             return { name = name, handler = handler }
+        end,
+        timer = function(callback)
+            timers[#timers + 1] = callback
+            return {}
+        end,
+        get_windows = function()
+            local result = {}
+            for _, item in pairs(all_targets) do result[#result + 1] = item.window end
+            return result
         end,
         get_active_workspace = function()
             return active_workspace
@@ -323,5 +352,50 @@ return function(T)
         T.near(xwayland.placed.y, 25)
         T.near(xwayland.placed.w, 640)
         T.near(xwayland.placed.h, 695)
+    end)
+
+    T.case("shared adapter coalesces switches and tolerates partial layout callbacks", function()
+        local source, destination, skipped = workspace(201), workspace(202), workspace(203, "dwindle")
+        local a, b, private = target(8101, false, source), target(8102, true, source), target(8103, true, destination)
+        provider.recalculate(context(destination, {private}))
+        local ctx = context(source, {a, b})
+        provider.recalculate(ctx)
+        provider.layout_msg(ctx, "share on")
+        context(skipped, {})
+        handlers["workspace.active"][1](skipped)
+        context(destination, {private})
+        handlers["workspace.active"][1](destination)
+        T.equal(#timers, 1)
+        local callback = table.remove(timers, 1)
+        callback()
+        T.equal(a.window.workspace, destination)
+        T.equal(b.window.workspace, destination)
+        T.falsy(grid.engine.workspaces["201"].tiles["window:8101"])
+        T.equal(grid.engine.workspaces["202"].focus_key, "window:8103")
+        T.truthy(grid.engine:validate(grid.engine.workspaces["202"]))
+        T.equal(#grid.shared:pending("201"), 1)
+        provider.layout_msg(context(destination, {a, b, private}), "share off") -- local focus, no effect
+        a.window.active, b.window.active, private.window.active = true, false, false
+        provider.layout_msg(context(destination, {a, b, private}), "share off")
+        T.equal(#grid.shared:pending("201"), 0)
+    end)
+
+    T.case("shared adapter rolls back a partially completed window move", function()
+        local source, destination = workspace(204), workspace(205)
+        local a, b = target(8201, true, source), target(8202, false, source)
+        local ctx = context(source, {a, b})
+        provider.recalculate(ctx)
+        provider.layout_msg(ctx, "share on")
+        move_count, fail_move_on = 0, 2
+        context(destination, {})
+        handlers["workspace.active"][1](destination)
+        table.remove(timers, 1)()
+        fail_move_on = nil
+        T.equal(a.window.workspace, source)
+        T.equal(b.window.workspace, source)
+        T.truthy(grid.engine.workspaces["204"].tiles["window:8201"])
+        T.truthy(grid.engine.workspaces["204"].tiles["window:8202"])
+        T.falsy(grid.engine.workspaces["205"] and grid.engine.workspaces["205"].tiles["window:8201"])
+        T.equal(#grid.shared:pending("205"), 1)
     end)
 end

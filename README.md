@@ -92,6 +92,38 @@ Native plugins must match the running Hyprland ABI. Rebuild after Hyprland updat
 
 ## Layout messages
 
+### Shared rows across workspaces
+
+`Super+Ctrl+Shift+P` in the example configuration toggles sharing for the
+focused row. The same shortcut works in native overview. A notification confirms
+whether the row is shared or local.
+
+Shared rows follow the active **normal grid workspace**, carrying their real
+windows, sizes, order, horizontal scroll and row focus memory. A destination's
+existing focused window keeps focus. Shared rows always stay above
+local rows, including when first shared and when new local rows are inserted.
+Several rows can be shared; their order follows when sharing was enabled. Other layouts and special workspaces are skipped.
+
+```lua
+hl.bind("SUPER + CTRL + SHIFT + P", grid.command("share toggle"))
+-- Optional explicit scope, including the workspace where sharing is enabled:
+-- hl.bind("SUPER + CTRL + SHIFT + P", grid.command("share on 1,2,3"))
+```
+
+`share on` enables sharing, `share on 1,2,3` limits it to those workspace IDs,
+and `share off` leaves the row in its current workspace. Windows inserted or
+moved into a shared row join it; moving a window out makes that window local.
+Closing the final window removes the shared row. Ungroup tabbed windows before
+sharing. Floating windows are not moved with a tiled row.
+
+There is one interactive copy: on multiple monitors the row follows the focused
+grid workspace. In overview it appears in its current owning workspace and moves
+when you explicitly switch workspaces; mirrored copies in inactive cards are not
+implemented. Sharing and layout state survive config reloads within the same
+Hyprland process. Restarting the desktop starts a new session.
+
+### Commands
+
 Use these through `hl.dsp.layout("...")` or `grid.command("...")`.
 
 Toggle the active grid workspace with this binding (also included in the example config):
@@ -104,6 +136,7 @@ hl.bind("SUPER + CTRL + SHIFT + S", grid.command("scroll toggle"))
 
 | Message | Behavior |
 |---|---|
+| `share [toggle/on/off] [all/1,2,3]` | Share the focused row across grid workspaces, optionally restricting its scope. |
 | `scroll rows/shared/toggle` | Select or toggle independent row scrolling and a shared 2D canvas for this workspace. |
 | `focus left/right/up/down` | In row mode, left/right follows row order and up/down restores the adjacent row's focus and horizontal offset. Shared mode uses spatial neighbors. |
 | `pan left/right/up/down [amount]` | In row mode, horizontal panning affects the focused row; vertical panning affects the workspace. Shared mode pans the whole canvas. Default is `pan_step`. |
@@ -176,6 +209,11 @@ make benchmark
 ```
 
 `make test` covers geometry, fixed-size insertion, independent row scrolling, mode toggles, movement, resize, panning, lifecycle, overview transitions, focus dispatch, and the Lua adapter. The original shared-canvas behavior has its own regression coverage. `make verify` parses the API fixture with the installed Hyprland binary.
+
+`python3 tests/shared-smoke.py --instance <nested-instance>` exercises real
+shared-row keybindings, workspace ownership, focus, scrolling, scopes, reloads,
+overview, and window closure in an empty isolated compositor with native overview
+enabled. See [`native/README.md`](native/README.md) for starting that fixture.
 
 The Lua custom-layout API does not expose a reliable mouse tiled-resize delta or drag-to-reorder hook. Keyboard layout messages are therefore the supported way to resize and move windows.
 

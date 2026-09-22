@@ -320,6 +320,7 @@ function Engine:_structural_last_key(state)
 end
 
 function Engine:_anchor_location(state)
+    if state.empty_row and state.empty_row.selected then return nil end
     if state.focus_key and present(state.tiles[state.focus_key]) then
         return {
             key = state.focus_key,
@@ -462,6 +463,10 @@ function Engine:_materialize(state)
 end
 
 function Engine:_save_row_view(state)
+    if state.empty_row and state.empty_row.selected then
+        state.empty_row.x = state.viewport.x
+        return
+    end
     local view = state.row_views[state.active_row_id]
     if view and state.scroll_mode == "rows" and not state.overview.active and not state.fitted then
         view.x = state.viewport.x
@@ -645,6 +650,18 @@ local function directional_insertion_rect(anchor, direction, width, height, row_
 end
 
 function Engine:_insert_new(state, key)
+    if state.empty_row and state.empty_row.selected then
+        local empty = state.empty_row
+        local width, height = self:_default_size(state)
+        local rect = make_rect(tostring(key), empty.x or 0, empty.y, width, height)
+        rect.row_id = new_row_id(state)
+        state.empty_row = nil
+        state.tiles[rect.key] = rect
+        state.order[#state.order + 1] = rect.key
+        state.focus_key = rect.key
+        self:_materialize(state)
+        return rect.key
+    end
     if self:present_count(state) == 0 then
         -- A workspace with no live tiles has no meaningful viewport position.
         -- Start its next first tile at the world origin.
@@ -1281,7 +1298,33 @@ function Engine:leave_overview(state, cancel)
     return true, focus_key
 end
 
+function Engine:select_empty_row(state)
+    if not state.empty_row then return false end
+    self:_save_row_view(state)
+    state.empty_row.selected = true
+    state.focus_key, state.active_row_id = nil, nil
+    state.fitted = false
+    state.viewport.scale = 1
+    state.viewport.x = state.empty_row.x or 0
+    state.viewport.y = state.empty_row.y
+    return true
+end
+
 function Engine:focus(state, direction)
+    if state.empty_row and state.empty_row.selected then
+        if direction ~= "up" then return nil end
+        local row = state.rows[#state.rows]
+        if not row then return nil end
+        self:_save_row_view(state)
+        state.empty_row.selected = false
+        local view = state.row_views[row.id]
+        local key = view.focus_key
+        if not present(state.tiles[key]) or state.tiles[key].row_id ~= row.id then key = row.cells[1].key end
+        state.focus_key = key
+        self:_activate_row(state, key)
+        self:_reveal_vertical(state, key)
+        return key
+    end
     local anchor = self:_anchor_location(state)
     if not anchor or not Geometry.valid_direction(direction) then
         return nil
@@ -1292,6 +1335,7 @@ function Engine:focus(state, direction)
         if direction == "up" or direction == "down" then
             local row = adjacent_row(state, anchor.tile, direction, self.config.edge_tolerance)
             if not row then
+                if direction == "down" then self:select_empty_row(state) end
                 return nil
             end
             local view = state.row_views[row.id]
@@ -1327,6 +1371,7 @@ function Engine:focus(state, direction)
         diagonal_weight = self.config.diagonal_weight,
     })
     if not next_key then
+        if direction == "down" then self:select_empty_row(state) end
         return nil
     end
 
@@ -1376,7 +1421,9 @@ function Engine:sync(workspace_id, descriptors, area)
         end
     end
 
-    if active_key and present(state.tiles[active_key]) then
+    if state.empty_row and state.empty_row.selected then
+        state.focus_key = nil
+    elseif active_key and present(state.tiles[active_key]) then
         state.focus_key = active_key
     elseif not present(state.tiles[state.focus_key or "\0"]) then
         state.focus_key = self:last_present_key(state)
@@ -1443,8 +1490,10 @@ function Engine:command(state, message)
         if not direction then
             return nil, "grid: focus expects left, right, up, or down"
         end
+        local was_empty = state.empty_row and state.empty_row.selected
         local key = self:focus(state, direction)
-        return { changed = key ~= nil, focus_key = key }
+        local empty = state.empty_row and state.empty_row.selected
+        return { changed = key ~= nil or (empty and not was_empty), focus_key = key, clear_focus = empty }
     elseif command == "pan" then
         local direction = normalize_direction(tokens[2])
         local amount = self.config.pan_step

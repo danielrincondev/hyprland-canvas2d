@@ -80,6 +80,8 @@ end
 -- Toggle only the current grid workspace between independent rows and a
 -- shared 2D canvas. Row scroll positions survive the round trip.
 hl.bind("SUPER + CTRL + SHIFT + S", grid.command("scroll toggle"))
+-- Share/unshare the focused row across all normal grid workspaces.
+hl.bind("SUPER + CTRL + SHIFT + P", grid.command("share toggle"))
 hl.bind("SUPER + CTRL + C", grid.command("center focused"))
 hl.bind("SUPER + CTRL + F", grid.command("fit all"))
 hl.bind("SUPER + CTRL + R", grid.command("reset viewport"))

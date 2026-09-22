@@ -1,5 +1,23 @@
+diff --git i/main.cpp w/main.cpp
+index 4eed7c1..c8d2b51 100644
+--- i/main.cpp
++++ w/main.cpp
+@@ -666,6 +666,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
+     ScrollOverview::Config::registerDispatcher("window", ::onWindowDispatcher);
+     ScrollOverview::Config::registerGesture(::onRegisterOverviewGesture, ::overviewGestureKeyword);
+     ScrollOverview::Config::registerConfig();
++    HyprlandAPI::addLuaFunction(SCROLLOVERVIEW_HANDLE, "scrolloverview", "empty_row", [](lua_State*) -> int {
++        const auto active = scrollOverviewForMonitor(Desktop::focusState()->monitor());
++        if (auto* overview = active ? dynamic_cast<CScrollOverview*>(active.get()) : nullptr)
++            overview->selectEmptyRow();
++        Desktop::focusState()->fullWindowFocus(nullptr, Desktop::FOCUS_REASON_KEYBIND);
++        return 0;
++    });
+ 
+     return {"scrolloverview", "A plugin for an overview", "Vaxry, yayuuu", SCROLLOVERVIEW_VERSION};
+ }
 diff --git i/scrollOverview.cpp w/scrollOverview.cpp
-index b4db2d5..d7fd4f8 100644
+index b4db2d5..323f6e9 100644
 --- i/scrollOverview.cpp
 +++ w/scrollOverview.cpp
 @@ -71,6 +71,7 @@
@@ -79,7 +97,32 @@ index b4db2d5..d7fd4f8 100644
      if (!usesSubmapKeybinds)
          keyboardKeyHook = Event::bus()->m_events.input.keyboard.key.listen(onKeyboardKey);
  
-@@ -3755,8 +3761,8 @@ bool CScrollOverview::moveSelection(const std::string& direction) {
+@@ -3592,6 +3598,12 @@ void CScrollOverview::finishWorkspaceScrollFollow() {
+     }
+ }
+ 
++void CScrollOverview::selectEmptyRow() {
++    gridEmptyWorkspace = pMonitor ? pMonitor->m_activeWorkspace : PHLWORKSPACE{};
++    closeOnWindow.reset();
++    damage();
++}
++
+ void CScrollOverview::syncSelectionToViewport() {
+     if (images.empty() || viewportCurrentWorkspace >= images.size()) {
+         closeOnWindow.reset();
+@@ -3599,6 +3611,11 @@ void CScrollOverview::syncSelectionToViewport() {
+     }
+ 
+     const auto& WSPACE = images[viewportCurrentWorkspace];
++    if (gridEmptyWorkspace == WSPACE->pWorkspace && !Desktop::focusState()->window()) {
++        closeOnWindow.reset();
++        return;
++    }
++    gridEmptyWorkspace.reset();
+ 
+     if (closeOnWindow && closeOnWindow->m_workspace == WSPACE->pWorkspace) {
+         const auto selectedWindow = getOverviewWindowToShow(closeOnWindow.lock());
+@@ -3755,8 +3772,8 @@ bool CScrollOverview::moveSelection(const std::string& direction) {
          const float SECONDARYDISTANCE =
              MOVINGLEFT || MOVINGRIGHT ? std::abs(WINDOWCENTER.y - CURRENTCENTER.y) : std::abs(WINDOWCENTER.x - CURRENTCENTER.x);
  
@@ -90,7 +133,7 @@ index b4db2d5..d7fd4f8 100644
  
          if (!bestCandidate) {
              bestCandidate         = WINDOW;
-@@ -3802,11 +3808,7 @@ bool CScrollOverview::moveSelection(const std::string& direction) {
+@@ -3802,11 +3819,7 @@ bool CScrollOverview::moveSelection(const std::string& direction) {
          shouldMoveWorkspace = true;
  
      if (shouldMoveWorkspace) {
@@ -103,7 +146,7 @@ index b4db2d5..d7fd4f8 100644
      }
  
      closeOnWindow = bestCandidate;
-@@ -5015,6 +5017,14 @@ void CScrollOverview::close(ECloseMode mode) {
+@@ -5015,6 +5028,14 @@ void CScrollOverview::close(ECloseMode mode) {
      const bool PRESERVEMONITORSTATE = mode == ECloseMode::PRESERVE_MONITOR_STATE;
      const bool ACTIVATESELECTION    = !PRESERVEMONITORSTATE && activeScrollOverview().get() == this;
      const auto MONITOR              = pMonitor.lock();
@@ -118,7 +161,7 @@ index b4db2d5..d7fd4f8 100644
      const auto SELECTEDWORKSPACE    = PRESERVEMONITORSTATE ?
          (MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{}) :
          (viewportCurrentWorkspace < images.size() && images[viewportCurrentWorkspace] ? images[viewportCurrentWorkspace]->pWorkspace : PHLWORKSPACE{});
-@@ -5428,6 +5438,7 @@ void CScrollOverview::releaseInputListeners() {
+@@ -5428,6 +5449,7 @@ void CScrollOverview::releaseInputListeners() {
      mouseButtonHook.reset();
      touchDownHook.reset();
      keyboardKeyHook.reset();
@@ -126,7 +169,7 @@ index b4db2d5..d7fd4f8 100644
      dragKeyboardKeyHook.reset();
  }
  
-@@ -5437,14 +5448,8 @@ void CScrollOverview::activateSubmapIfConfigured() {
+@@ -5437,14 +5459,8 @@ void CScrollOverview::activateSubmapIfConfigured() {
  
      previousSubmapName = g_pKeybindManager->getCurrentSubmap().name;
  
@@ -143,7 +186,7 @@ index b4db2d5..d7fd4f8 100644
          usesSubmapKeybinds = false;
          return;
      }
-@@ -5457,10 +5462,8 @@ void CScrollOverview::restoreSubmapIfActive() {
+@@ -5457,10 +5473,8 @@ void CScrollOverview::restoreSubmapIfActive() {
          return;
  
      const auto CURRENT = g_pKeybindManager->getCurrentSubmap().name;
@@ -157,10 +200,26 @@ index b4db2d5..d7fd4f8 100644
  
      submapActive = false;
 diff --git i/scrollOverview.hpp w/scrollOverview.hpp
-index 0535fdc..b0f02dd 100644
+index 0535fdc..f7700c6 100644
 --- i/scrollOverview.hpp
 +++ w/scrollOverview.hpp
-@@ -314,6 +314,7 @@ class CScrollOverview : public IOverview {
+@@ -57,6 +57,7 @@ class CScrollOverview : public IOverview {
+ 
+     void         fullRender() override;
+     bool         adoptNativeWindowDrag(PHLWINDOW expectedWindow = {});
++    void         selectEmptyRow();
+ 
+   private:
+     enum class ECloseMode {
+@@ -204,6 +205,7 @@ class CScrollOverview : public IOverview {
+     Vector2D                         lastMousePosLocal = Vector2D{}; // monitor-local pixel space
+ 
+     PHLWINDOWREF                     closeOnWindow;
++    PHLWORKSPACEREF                  gridEmptyWorkspace;
+     PHLWINDOWREF                     dragActiveWindow;
+     PHLWORKSPACEREF                  dragOriginalWorkspace;
+     std::vector<WP<IOverview>>                    dragTransientOverviews;
+@@ -314,6 +316,7 @@ class CScrollOverview : public IOverview {
      CHyprSignalListener             windowActiveHook;
      CHyprSignalListener             windowFullscreenHook;
      CHyprSignalListener             keyboardKeyHook;
