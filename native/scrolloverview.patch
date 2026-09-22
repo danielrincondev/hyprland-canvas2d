@@ -1,9 +1,154 @@
+diff --git i/Config.cpp w/Config.cpp
+index fba6722..24b85be 100644
+--- i/Config.cpp
++++ w/Config.cpp
+@@ -68,6 +68,13 @@ SDispatcher* findDispatcher(const std::string_view name) {
+             .invalidArgError = "expected one of: select, close",
+             .luaFunction     = [](lua_State* L) { return dispatcherFactoryLua(L, "window"); },
+         },
++        {
++            .name            = "zoomswitch",
++            .argPattern      = std::regex{R"(^[^ \t"\\]+$)"},
++            .typeArgError    = "expected a workspace string argument",
++            .invalidArgError = "expected a workspace, e.g. \"3\"",
++            .luaFunction     = [](lua_State* L) { return dispatcherFactoryLua(L, "zoomswitch"); },
++        },
+     };
+ 
+     const auto MATCH = std::ranges::find_if(registrations, [name](const auto& registration) { return registration.name == name; });
+@@ -269,6 +276,12 @@ static void registerConfigValues() {
+                                   makeShared<CIntValue>("plugin:scrolloverview:gesture_distance", "gesture distance in pixels", 200, SIntValueOptions{.min = 1}));
+     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                   makeShared<CFloatValue>("plugin:scrolloverview:scale", "overview scale", 0.5F, SFloatValueOptions{.min = 0.1F, .max = 0.9F}));
++    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
++                                  makeShared<CFloatValue>("plugin:scrolloverview:zoom_switch:scale", "scale reached while zoom-switching workspaces", 0.85F,
++                                                          SFloatValueOptions{.min = 0.3F, .max = 1.F}));
++    HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
++                                  makeShared<CFloatValue>("plugin:scrolloverview:zoom_switch:speed", "zoom-switch animation speed (0 follows windowsMove)", 0.F,
++                                                          SFloatValueOptions{.min = 0.F, .max = 20.F}));
+     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+                                   makeShared<CIntValue>("plugin:scrolloverview:workspace_gap", "gap between overview workspaces", 0, SIntValueOptions{.min = 0}));
+     HyprlandAPI::addConfigValueV2(SCROLLOVERVIEW_HANDLE,
+@@ -319,6 +332,14 @@ float getScale() {
+     return std::clamp(getValue<float>("plugin:scrolloverview:scale"), 0.1F, 0.9F);
+ }
+ 
++float getZoomSwitchScale() {
++    return std::clamp(getValue<float>("plugin:scrolloverview:zoom_switch:scale"), 0.3F, 1.F);
++}
++
++float getZoomSwitchSpeed() {
++    return std::clamp(getValue<float>("plugin:scrolloverview:zoom_switch:speed"), 0.F, 20.F);
++}
++
+ int getWorkspaceGap() {
+     return std::max<int>(0, getValue<int>("plugin:scrolloverview:workspace_gap"));
+ }
+diff --git i/Config.hpp w/Config.hpp
+index 097b600..7a33c6f 100644
+--- i/Config.hpp
++++ w/Config.hpp
+@@ -86,6 +86,8 @@ void setValue(const std::string& name, const T& value) {
+ 
+ int           getGestureDistance();
+ float         getScale();
++float         getZoomSwitchScale();
++float         getZoomSwitchSpeed();
+ int           getWorkspaceGap();
+ ELayout       getLayout();
+ bool          getCrossMonitorDrag();
 diff --git i/main.cpp w/main.cpp
-index 4eed7c1..c8d2b51 100644
+index 4eed7c1..b261c35 100644
 --- i/main.cpp
 +++ w/main.cpp
-@@ -666,6 +666,13 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
+@@ -7,6 +7,9 @@
+ #include <hyprland/src/desktop/Workspace.hpp>
+ #include <hyprland/src/desktop/view/Window.hpp>
+ #include <hyprland/src/config/ConfigManager.hpp>
++#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
++#include <hyprland/src/helpers/MiscFunctions.hpp>
++#include <hyprland/src/state/WorkspaceState.hpp>
+ #include <hyprland/src/desktop/DesktopTypes.hpp>
+ #include <hyprland/src/event/EventBus.hpp>
+ #include <hyprland/src/managers/KeybindManager.hpp>
+@@ -351,6 +354,19 @@ static SDispatchResult onOverviewDispatcher(std::string arg) {
+     if (MONITORS.empty())
+         return {.success = false, .error = TARGET.empty() ? "no active monitor" : "monitor not found: " + TARGET};
+ 
++    // Asking for the overview during a zoom-switch keeps it open as the
++    // regular interactive overview instead of closing it.
++    bool promoted = false;
++    for (const auto& monitor : MONITORS) {
++        auto* const overview = dynamic_cast<CScrollOverview*>(scrollOverviewForMonitor(monitor).get());
++        if (overview && overview->isTransit() && !overview->isClosing()) {
++            overview->promoteTransit();
++            promoted = true;
++        }
++    }
++    if (promoted)
++        return {};
++
+     const bool ALL_OPEN = std::ranges::all_of(MONITORS, [](const auto& monitor) { return !!scrollOverviewForMonitor(monitor); });
+     if (ACTION == "toggle" && ALL_OPEN) {
+         for (const auto& monitor : MONITORS) {
+@@ -371,6 +387,52 @@ static SDispatchResult onOverviewDispatcher(std::string arg) {
+     return {};
+ }
+ 
++// Switch workspace with a short zoom-out: open a non-interactive overview,
++// pan to the target while zooming out slightly, then zoom back in. Falls back
++// to a plain switch whenever the animation would not make sense.
++static SDispatchResult onZoomSwitchDispatcher(std::string arg) {
++    const auto plainSwitch = [&arg]() -> SDispatchResult {
++        const auto RESULT = Config::Actions::changeWorkspace(arg);
++        if (!RESULT)
++            return {.success = false, .error = RESULT.error().message};
++        return {};
++    };
++
++    const auto MONITOR = Desktop::focusState()->monitor();
++    if (!MONITOR || !MONITOR->m_activeWorkspace || MONITOR->m_activeSpecialWorkspace || !ScrollOverview::Config::getValue<int>("animations:enabled"))
++        return plainSwitch();
++
++    // With an overview already open (a running transit or the interactive
++    // one), a plain switch lets it pan to the new target itself.
++    if (scrollOverviewForMonitor(MONITOR))
++        return plainSwitch();
++
++    const auto TARGETID = getWorkspaceIDNameFromString(arg).id;
++    if (TARGETID == WORKSPACE_INVALID || TARGETID == MONITOR->m_activeWorkspace->m_id)
++        return plainSwitch();
++
++    for (const auto& workspace : State::workspaceState()->workspaces()) {
++        if (workspace->m_id != TARGETID)
++            continue;
++        // Switching to a workspace on another output moves focus there;
++        // there is nothing on this monitor to zoom across.
++        if (workspace->m_isSpecialWorkspace || workspace->m_monitor.lock() != MONITOR)
++            return plainSwitch();
++        break;
++    }
++
++    const auto OPENED  = openOverview(MONITOR);
++    auto* const overview = OPENED.overview ? dynamic_cast<CScrollOverview*>(OPENED.overview.get()) : nullptr;
++    if (!overview || !OPENED.created)
++        return plainSwitch();
++
++    overview->beginTransit();
++    const auto RESULT = plainSwitch();
++    if (!RESULT.success)
++        overview->dismissTransient();
++    return RESULT;
++}
++
+ static SDispatchResult onNavigateDispatcher(std::string arg) {
+     const auto OVERVIEW = dispatcherOverview();
+ 
+@@ -664,8 +726,16 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
+     ScrollOverview::Config::registerDispatcher("overview", ::onOverviewDispatcher);
+     ScrollOverview::Config::registerDispatcher("navigate", ::onNavigateDispatcher);
      ScrollOverview::Config::registerDispatcher("window", ::onWindowDispatcher);
++    ScrollOverview::Config::registerDispatcher("zoomswitch", ::onZoomSwitchDispatcher);
      ScrollOverview::Config::registerGesture(::onRegisterOverviewGesture, ::overviewGestureKeyword);
      ScrollOverview::Config::registerConfig();
 +    HyprlandAPI::addLuaFunction(SCROLLOVERVIEW_HANDLE, "scrolloverview", "empty_row", [](lua_State*) -> int {
@@ -17,7 +162,7 @@ index 4eed7c1..c8d2b51 100644
      return {"scrolloverview", "A plugin for an overview", "Vaxry, yayuuu", SCROLLOVERVIEW_VERSION};
  }
 diff --git i/scrollOverview.cpp w/scrollOverview.cpp
-index b4db2d5..323f6e9 100644
+index b4db2d5..b23e65e 100644
 --- i/scrollOverview.cpp
 +++ w/scrollOverview.cpp
 @@ -71,6 +71,7 @@
@@ -161,7 +306,82 @@ index b4db2d5..323f6e9 100644
      const auto SELECTEDWORKSPACE    = PRESERVEMONITORSTATE ?
          (MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{}) :
          (viewportCurrentWorkspace < images.size() && images[viewportCurrentWorkspace] ? images[viewportCurrentWorkspace]->pWorkspace : PHLWORKSPACE{});
-@@ -5428,6 +5449,7 @@ void CScrollOverview::releaseInputListeners() {
+@@ -5173,6 +5194,50 @@ void CScrollOverview::reopen() {
+     damage();
+ }
+ 
++void CScrollOverview::beginTransit() {
++    transit         = true;
++    transitSwitched = false;
++    // The switch is an animation, not an interactive overview: keep keyboard
++    // input on the normal bindings instead of the overview submap.
++    restoreSubmapIfActive();
++
++    const auto BASE   = Config::animationTree()->getAnimationPropertyConfig("windowsMove");
++    const auto VALUES = BASE && BASE->pValues ? BASE->pValues.lock() : BASE;
++    const auto SPEED  = ScrollOverview::Config::getZoomSwitchSpeed();
++
++    transitConfig                  = makeShared<Hyprutils::Animation::SAnimationPropertyConfig>();
++    transitConfig->overridden      = true;
++    transitConfig->internalBezier  = VALUES ? VALUES->internalBezier : "default";
++    transitConfig->internalSpeed   = SPEED > 0.F ? SPEED : (VALUES ? VALUES->internalSpeed : 10.F);
++    transitConfig->internalEnabled = VALUES ? VALUES->internalEnabled : 1;
++    transitConfig->internalStyle   = "";
++    transitConfig->pValues         = transitConfig;
++
++    scale->setConfig(transitConfig);
++    viewOffset->setConfig(transitConfig);
++    workspaceInsertProgress->setConfig(transitConfig);
++    *scale = ScrollOverview::Config::getZoomSwitchScale();
++    damage();
++}
++
++void CScrollOverview::promoteTransit() {
++    if (!transit || closing)
++        return;
++
++    transit = false;
++    const auto WINDOWSMOVECONFIG = Config::animationTree()->getAnimationPropertyConfig("windowsMove");
++    scale->setConfig(WINDOWSMOVECONFIG);
++    viewOffset->setConfig(WINDOWSMOVECONFIG);
++    workspaceInsertProgress->setConfig(WINDOWSMOVECONFIG);
++    activateSubmapIfConfigured();
++    *scale = ScrollOverview::Config::getScale();
++    damage();
++}
++
++bool CScrollOverview::isTransit() const {
++    return transit;
++}
++
+ void CScrollOverview::onPreRender() {
+     if (pMonitor)
+         pMonitor->m_solitaryClient.reset();
+@@ -5189,11 +5254,23 @@ void CScrollOverview::onPreRender() {
+         onWorkspaceChange();
+         focusSyncedFromWorkspaceID = WORKSPACE_INVALID;
+         emitFullscreenVisibilityState(Desktop::focusState()->window(), true);
++        if (transit)
++            transitSwitched = true;
+         return;
+     }
+ 
+     focusSyncedFromWorkspaceID = WORKSPACE_INVALID;
+ 
++    if (transit) {
++        // Zoom back in once the pan to the new workspace has settled. Keep
++        // frames coming until then so the settle is always observed.
++        if (transitSwitched && !viewOffset->isBeingAnimated() && !workspaceInsertProgress->isBeingAnimated()) {
++            close();
++            return;
++        }
++        damage();
++    }
++
+     if (rebuildPending) {
+         rebuildPending = false;
+         markBlurDirty();
+@@ -5428,6 +5505,7 @@ void CScrollOverview::releaseInputListeners() {
      mouseButtonHook.reset();
      touchDownHook.reset();
      keyboardKeyHook.reset();
@@ -169,7 +389,7 @@ index b4db2d5..323f6e9 100644
      dragKeyboardKeyHook.reset();
  }
  
-@@ -5437,14 +5459,8 @@ void CScrollOverview::activateSubmapIfConfigured() {
+@@ -5437,14 +5515,8 @@ void CScrollOverview::activateSubmapIfConfigured() {
  
      previousSubmapName = g_pKeybindManager->getCurrentSubmap().name;
  
@@ -186,7 +406,7 @@ index b4db2d5..323f6e9 100644
          usesSubmapKeybinds = false;
          return;
      }
-@@ -5457,10 +5473,8 @@ void CScrollOverview::restoreSubmapIfActive() {
+@@ -5457,10 +5529,8 @@ void CScrollOverview::restoreSubmapIfActive() {
          return;
  
      const auto CURRENT = g_pKeybindManager->getCurrentSubmap().name;
@@ -200,18 +420,24 @@ index b4db2d5..323f6e9 100644
  
      submapActive = false;
 diff --git i/scrollOverview.hpp w/scrollOverview.hpp
-index 0535fdc..f7700c6 100644
+index 0535fdc..65ed847 100644
 --- i/scrollOverview.hpp
 +++ w/scrollOverview.hpp
-@@ -57,6 +57,7 @@ class CScrollOverview : public IOverview {
+@@ -57,6 +57,13 @@ class CScrollOverview : public IOverview {
  
      void         fullRender() override;
      bool         adoptNativeWindowDrag(PHLWINDOW expectedWindow = {});
 +    void         selectEmptyRow();
++    // A transit is a short, non-interactive zoom-out used to animate a
++    // workspace switch: zoom out, pan to the new workspace, zoom back in.
++    void         beginTransit();
++    // Turn a running transit into the normal interactive overview.
++    void         promoteTransit();
++    bool         isTransit() const;
  
    private:
      enum class ECloseMode {
-@@ -204,6 +205,7 @@ class CScrollOverview : public IOverview {
+@@ -204,6 +211,7 @@ class CScrollOverview : public IOverview {
      Vector2D                         lastMousePosLocal = Vector2D{}; // monitor-local pixel space
  
      PHLWINDOWREF                     closeOnWindow;
@@ -219,7 +445,17 @@ index 0535fdc..f7700c6 100644
      PHLWINDOWREF                     dragActiveWindow;
      PHLWORKSPACEREF                  dragOriginalWorkspace;
      std::vector<WP<IOverview>>                    dragTransientOverviews;
-@@ -314,6 +316,7 @@ class CScrollOverview : public IOverview {
+@@ -295,6 +303,9 @@ class CScrollOverview : public IOverview {
+     PHLANIMVAR<float>                workspaceInsertFadeProgress;
+     SP<Hyprutils::Animation::SAnimationPropertyConfig> workspaceInsertFadeConfig;
+     SP<Hyprutils::Animation::SAnimationPropertyConfig> workspaceRemoveFadeConfig;
++    SP<Hyprutils::Animation::SAnimationPropertyConfig> transitConfig;
++    bool                             transit = false;
++    bool                             transitSwitched = false; // the target workspace became active
+     Time::steady_tp                  lastRealtimePreviewFrame = {};
+     Time::steady_tp                  realtimePreviewTimerDue = {};
+     wl_event_source*                 realtimePreviewTimer = nullptr;
+@@ -314,6 +325,7 @@ class CScrollOverview : public IOverview {
      CHyprSignalListener             windowActiveHook;
      CHyprSignalListener             windowFullscreenHook;
      CHyprSignalListener             keyboardKeyHook;

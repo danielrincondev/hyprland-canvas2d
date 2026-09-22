@@ -1,6 +1,22 @@
 -- Optional native scene zoom. Install with `make install-native-overview` first.
 local M = {}
 
+-- Returns a bind callback that switches to `workspace` with the plugin's
+-- zoom-out transition, or a plain switch when the plugin (or a build with
+-- zoomswitch) is not loaded.  Resolved at key press, so it works on the
+-- config pass that runs before the plugin registers its Lua API.
+function M.switch_workspace(workspace)
+    workspace = tostring(workspace)
+    return function()
+        local overview = hl.plugin and hl.plugin.scrolloverview
+        if overview and overview.zoomswitch then
+            overview.zoomswitch(workspace)()
+        else
+            hl.dispatch(hl.dsp.focus({ workspace = workspace }))
+        end
+    end
+end
+
 function M.setup(options)
     options = options or {}
     local path = options.path or (assert(os.getenv("HOME")) .. "/.local/lib/hyprland-grid/scrolloverview.so")
@@ -20,6 +36,14 @@ function M.setup(options)
         wallpaper = 2,
         blur = false,
     } } })
+    -- Older plugin builds reject unknown options; configure zoom-switch only
+    -- when the loaded build provides it.
+    if hl.plugin.scrolloverview.zoomswitch then
+        hl.config({ plugin = { scrolloverview = { zoom_switch = {
+            scale = options.zoom_switch_scale or 0.85,
+            speed = options.zoom_switch_speed or 0,
+        } } } })
+    end
 
     -- Keep ordinary workspace changes as smooth as window movement.
     hl.curve("gridWorkspace", { type = "bezier", points = { { 0.23, 1 }, { 0.32, 1 } } })

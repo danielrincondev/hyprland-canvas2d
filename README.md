@@ -89,6 +89,15 @@ The integration also enables horizontal slide animations for ordinary workspace 
 
 The scale is configurable from `0.1` to `0.9`; smaller values show more of the canvas. This is a fixed zoom level, not automatic fitting of an unlimited canvas. The native overview is separate from the Lua `overview`/`fit all` layout messages, which change client geometry; use the native shortcut for visual zoom. Grid-specific row reordering by dragging is not integrated.
 
+The patched plugin also provides a zoom-out workspace transition. Bind
+`require("grid.native_overview").switch_workspace(n)` to switch to workspace
+`n` by zooming out slightly, panning across, and zooming back in; it falls back
+to a plain switch when the plugin is not loaded, the target is on another
+monitor, or animations are disabled. Tune it with the `zoom_switch_scale`
+(default `0.85`) and `zoom_switch_speed` (default `0`, which follows
+`windowsMove`) options of `native_overview.setup`. Pressing the overview
+shortcut mid-transition keeps the overview open.
+
 Native plugins must match the running Hyprland ABI. Rebuild after Hyprland updates, then restart the session to use the new library. Versioned libraries avoid overwriting a loaded binary. To disable automatic loading, remove the setup line and restart Hyprland.
 
 ## Layout messages
