@@ -38,6 +38,7 @@ local grid = require("grid").setup({
     tile_width_ratio = 0.50,
     tile_height_ratio = 1.00,
     width_presets = { 0.34, 0.50, 0.67, 1.00 },
+    new_window_position = "center", -- default; "reveal" scrolls only until the window is visible
     pan_step = 300,
     resize_step = 60,
     viewport_margin = 0,
@@ -185,7 +186,7 @@ Rows have stable identities that survive resizing and vertical compaction. In ro
 
 ## Resizing
 
-`tile_width_ratio` and `tile_height_ratio` determine the size of new windows. The default `tile_height_ratio = 1.00` makes each unresized horizontal band fill the viewport height. These values do not describe a split and do not change when more windows are opened. `min_width` and `min_height` clamp every live rectangle.
+`tile_width_ratio` and `tile_height_ratio` determine the size of new windows. `new_window_position = "center"` (the default) scrolls the viewport so a newly opened window sits in the middle of the screen; `"reveal"` keeps the older behavior of scrolling only as far as needed, with a row's first window flush against the left edge. The default `tile_height_ratio = 1.00` makes each unresized horizontal band fill the viewport height. These values do not describe a split and do not change when more windows are opened. `min_width` and `min_height` clamp every live rectangle.
 
 `resize left/right` cycles the focused width relative to the current monitor width. Width cycling reflows only the focused row from that row's own left edge, so its windows stay stacked left-to-right and rows remain independent. `resize up/down [amount]` changes only the focused rectangle's height. A signed horizontal amount retains the explicit named-edge behavior; vertical growth still pushes collisions in that direction. All geometry remains non-overlapping and horizontal rows have no resize gaps.
 

@@ -9,6 +9,9 @@ local function new_engine(options)
     options.min_height = options.min_height or 40
     -- Keep the original shared-canvas contract covered alongside row-mode tests.
     options.scroll_mode = options.scroll_mode or "shared"
+    -- Viewport assertions below were written against edge-aligned reveal;
+    -- centered placement has its own cases.
+    options.new_window_position = options.new_window_position or "reveal"
     return Engine.new(options)
 end
 
@@ -88,6 +91,38 @@ return function(T)
             T.near(state.viewport.x, 0)
             T.near(state.viewport.y, 0)
         end
+    end)
+
+    T.case("new windows open centered in the viewport", function()
+        local engine = new_engine({ tile_width_ratio = 0.67, new_window_position = "center" })
+        local state = engine:sync("1", descriptors({ { key = "a", active = true } }), AREA)
+        local a = state.tiles.a
+        T.near(a.w, 670)
+        T.near(state.viewport.x + 500, a.x + a.w / 2)
+
+        state = engine:sync("1", descriptors({ "a", { key = "b", active = true } }), AREA)
+        local b = state.tiles.b
+        T.near(b.x, a.x + a.w)
+        T.near(state.viewport.x + 500, b.x + b.w / 2)
+
+        -- The focus-change reveal that follows must not undo the centering.
+        local centered_x = state.viewport.x
+        engine:command(state, "reveal")
+        T.near(state.viewport.x, centered_x)
+    end)
+
+    T.case("new_window_position reveal keeps edge-aligned placement", function()
+        local engine = new_engine({ new_window_position = "reveal" })
+        local state = engine:sync("1", descriptors({ { key = "a", active = true } }), AREA)
+        T.near(state.viewport.x, 0)
+        state = engine:sync("1", descriptors({ "a", { key = "b", active = true } }), AREA)
+        state = engine:sync("1", descriptors({ "a", "b", { key = "c", active = true } }), AREA)
+        T.near(state.viewport.x + AREA.w, state.tiles.c.x + state.tiles.c.w)
+    end)
+
+    T.case("new_window_position rejects unknown values", function()
+        local ok = pcall(Engine.new, { new_window_position = "left" })
+        T.equal(ok, false)
     end)
 
     T.case("first tiled window gets a fixed full-height default rectangle", function()

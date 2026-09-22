@@ -12,6 +12,7 @@ local grid = require("grid").setup({
     row_gap = 48,
     insertion = "auto",
     auto_reveal = true,
+    new_window_position = "center",
     scroll_mode = "rows", -- default; use "shared" for one workspace canvas
 })
 

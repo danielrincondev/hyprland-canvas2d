@@ -27,6 +27,9 @@ local DEFAULTS = {
     insertion = "auto",
     auto_reveal = true,
     reveal_new = true,
+    -- "center" scrolls a newly opened window to the middle of the viewport;
+    -- "reveal" scrolls only as far as needed to bring it into view.
+    new_window_position = "center",
     scroll_mode = "rows",
 }
 
@@ -223,6 +226,10 @@ local function validate_options(options)
         elseif key == "scroll_mode" then
             if value ~= "rows" and value ~= "shared" then
                 error("grid option scroll_mode must be rows or shared", 3)
+            end
+        elseif key == "new_window_position" then
+            if value ~= "center" and value ~= "reveal" then
+                error("grid option new_window_position must be center or reveal", 3)
             end
         elseif key == "auto_reveal" or key == "reveal_new" then
             if type(value) ~= "boolean" then
@@ -1164,16 +1171,18 @@ function Engine:reveal(state, key)
 
     local margin = self.config.viewport_margin / state.viewport.scale
     local epsilon = self.config.edge_tolerance
-    local _, row_start = horizontal_band_entries(state, tile, epsilon)
-    -- Never place a row's left edge behind an artificial reveal margin.
-    -- Hyprland supplies the outer gap; the navigation margin is only useful
-    -- between a row's windows.
-    if row_start and math.abs(tile.x - row_start) <= epsilon then
-        state.viewport.x = tile.x
-        margin = 0
-    end
     local viewport = self:world_viewport(state)
     local x, y = Geometry.reveal(viewport, tile, margin)
+    local _, row_start = horizontal_band_entries(state, tile, epsilon)
+    -- Land a row's first window flush with the left edge instead of behind an
+    -- artificial reveal margin (Hyprland supplies the outer gap).  In center
+    -- mode an already visible window keeps its position, so the offset left
+    -- by centering a new window survives the focus reveal that follows.
+    local must_scroll = x ~= viewport.x or self.config.new_window_position ~= "center"
+    if must_scroll and row_start and math.abs(tile.x - row_start) <= epsilon then
+        viewport.x = tile.x
+        x, y = Geometry.reveal(viewport, tile, 0)
+    end
     local changed = x ~= state.viewport.x or y ~= state.viewport.y
     state.viewport.x = x
     state.viewport.y = y
@@ -1435,7 +1444,11 @@ function Engine:sync(workspace_id, descriptors, area)
     if state.overview.active then
         self:fit_all(state)
     elseif self.config.reveal_new and active_key and newly_added[active_key] then
-        self:reveal(state, active_key)
+        if self.config.new_window_position == "center" then
+            self:center(state, active_key)
+        else
+            self:reveal(state, active_key)
+        end
     end
 
     return state, newly_added

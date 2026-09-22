@@ -131,6 +131,7 @@ return function(T)
     local grid = require("grid").setup({
         min_width = 50,
         min_height = 40,
+        new_window_position = "reveal",
     })
 
     T.case("adapter registers the current Lua custom layout API", function()
@@ -158,6 +159,20 @@ return function(T)
         provider.recalculate(ctx)
         T.near(first.placed.x, 1620)
         T.near(state.viewport.x, 300)
+    end)
+
+    T.case("adapter keeps a new window centered through its focus reveal", function()
+        grid.engine.config.new_window_position = "center"
+        local owner = workspace(104)
+        local first = target(4001, true, owner)
+        local ctx = context(owner, { first }, { x = 0, y = 0, w = 1000, h = 800 })
+        provider.recalculate(ctx)
+        local state = grid.engine.workspaces["104"]
+        handlers["window.active"][1](first.window, 0)
+        provider.recalculate(ctx)
+        grid.engine.config.new_window_position = "reveal"
+        T.near(state.viewport.x, -250)
+        T.near(first.placed.x, 250)
     end)
 
     T.case("adapter spatial focus dispatches the selected window object", function()
