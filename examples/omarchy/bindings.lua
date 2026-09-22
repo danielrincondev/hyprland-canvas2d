@@ -63,6 +63,8 @@ local alt_clusters = {
     mod = "ALT",
     hand = "Left Alt",
     directions = { up = "W", left = "A", down = "S", right = "D" },
+    -- Key names, used where key codes do not match (inside submaps).
+    workspace_keys = { "1", "2", "3", "4", "5" },
     last_window = "TAB",
     center = "C",
     close = "X",
@@ -73,6 +75,7 @@ local alt_clusters = {
     mod = "MOD5",
     hand = "Right Alt",
     directions = { up = "O", left = "K", down = "L", right = "semicolon" },
+    workspace_keys = { "minus", "0", "9", "8", "7" },
     last_window = "backslash",
     center = "M",
     close = "comma",
@@ -85,6 +88,13 @@ local alt_clusters = {
 -- a plain switch is used when the plugin is not loaded.
 local native_overview = require("grid.native_overview")
 
+-- Alt + Tab (or Right Alt + \\) arms a mode while Alt stays held:
+--   release Alt            jump to the last focused window, any workspace
+--   press a workspace key  move the focused window there, following it
+-- The move is silent so the zoom transition, not Hyprland, does the switching.
+local MOVE_SUBMAP = "move-window"
+local move_handled = false
+
 -- Jump to the previously focused window, following it to its workspace.
 local function focus_last_window()
   for _, window in ipairs(hl.get_windows()) do
@@ -94,6 +104,54 @@ local function focus_last_window()
     end
   end
 end
+
+local function arm_move_mode()
+  move_handled = false
+  hl.dispatch(hl.dsp.submap(MOVE_SUBMAP))
+end
+
+local function move_window_to(number)
+  return function()
+    move_handled = true
+    hl.dispatch(hl.dsp.submap("reset"))
+    hl.dispatch(hl.dsp.window.move({ workspace = tostring(number), follow = false }))
+    native_overview.switch_workspace(number)()
+  end
+end
+
+local function leave_move_mode()
+  local handled = move_handled
+  move_handled = false
+  -- Focus before leaving the submap: the reset otherwise lands first and the
+  -- focus dispatch is dropped.
+  if not handled then
+    focus_last_window()
+  end
+  hl.dispatch(hl.dsp.submap("reset"))
+end
+
+hl.define_submap(MOVE_SUBMAP, function()
+  for _, cluster in ipairs(alt_clusters) do
+    for number, key in ipairs(cluster.workspace_keys) do
+      -- Works whether or not Alt is still held.
+      hl.bind(key, move_window_to(number))
+      hl.bind(cluster.mod .. " + " .. key, move_window_to(number))
+    end
+    -- The arming key itself must not fall through and end the mode.
+    hl.bind(cluster.last_window, function() end, { ignore_mods = true })
+  end
+  -- Releasing either Alt ends the mode; with no workspace key pressed it
+  -- means plain Alt+Tab: go to the last focused window.  Hyprland only matches
+  -- these by key code (64 = left Alt, 108 = right Alt); keysyms never fire.
+  for _, modifier in ipairs({ "code:64", "code:108" }) do
+    hl.bind(modifier, leave_move_mode, { release = true, ignore_mods = true })
+  end
+  -- No catchall here: the arming key's own event would trip it immediately.
+  hl.bind("ESCAPE", function()
+    move_handled = true
+    hl.dispatch(hl.dsp.submap("reset"))
+  end, { ignore_mods = true })
+end)
 
 -- Remove Super movement: Omarchy's focus/swap arrows, workspace switching
 -- and moving windows between workspaces.
@@ -146,7 +204,8 @@ for _, cluster in ipairs(alt_clusters) do
 
   o.bind(mod .. " + " .. cluster.center, "Center grid focus" .. hand,
     grid.command("center focused", hl.dsp.window.center()))
-  o.bind(mod .. " + " .. cluster.last_window, "Focus last window" .. hand, focus_last_window)
+  o.bind(mod .. " + " .. cluster.last_window,
+    "Last window, or hold for move-to-workspace" .. hand, arm_move_mode)
   if cluster.close then
     o.bind(mod .. " + " .. cluster.close, "Close window" .. hand, hl.dsp.window.close())
   end
