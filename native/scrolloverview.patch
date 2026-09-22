@@ -58,7 +58,7 @@ index 097b600..7a33c6f 100644
  ELayout       getLayout();
  bool          getCrossMonitorDrag();
 diff --git i/main.cpp w/main.cpp
-index 4eed7c1..b261c35 100644
+index 4eed7c1..b8952bb 100644
 --- i/main.cpp
 +++ w/main.cpp
 @@ -7,6 +7,9 @@
@@ -91,7 +91,7 @@ index 4eed7c1..b261c35 100644
      const bool ALL_OPEN = std::ranges::all_of(MONITORS, [](const auto& monitor) { return !!scrollOverviewForMonitor(monitor); });
      if (ACTION == "toggle" && ALL_OPEN) {
          for (const auto& monitor : MONITORS) {
-@@ -371,6 +387,52 @@ static SDispatchResult onOverviewDispatcher(std::string arg) {
+@@ -371,6 +387,57 @@ static SDispatchResult onOverviewDispatcher(std::string arg) {
      return {};
  }
  
@@ -110,10 +110,15 @@ index 4eed7c1..b261c35 100644
 +    if (!MONITOR || !MONITOR->m_activeWorkspace || MONITOR->m_activeSpecialWorkspace || !ScrollOverview::Config::getValue<int>("animations:enabled"))
 +        return plainSwitch();
 +
-+    // With an overview already open (a running transit or the interactive
-+    // one), a plain switch lets it pan to the new target itself.
-+    if (scrollOverviewForMonitor(MONITOR))
++    // With an overview already open, a plain switch lets it pan to the new
++    // target itself. A transit caught mid zoom-in reopens first, so the
++    // switch keeps animating instead of waiting for the zoom to finish.
++    if (const auto EXISTING = scrollOverviewForMonitor(MONITOR)) {
++        auto* const overview = dynamic_cast<CScrollOverview*>(EXISTING.get());
++        if (overview && overview->isTransit() && overview->isClosing())
++            overview->reopen();
 +        return plainSwitch();
++    }
 +
 +    const auto TARGETID = getWorkspaceIDNameFromString(arg).id;
 +    if (TARGETID == WORKSPACE_INVALID || TARGETID == MONITOR->m_activeWorkspace->m_id)
@@ -144,7 +149,7 @@ index 4eed7c1..b261c35 100644
  static SDispatchResult onNavigateDispatcher(std::string arg) {
      const auto OVERVIEW = dispatcherOverview();
  
-@@ -664,8 +726,16 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
+@@ -664,8 +731,16 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
      ScrollOverview::Config::registerDispatcher("overview", ::onOverviewDispatcher);
      ScrollOverview::Config::registerDispatcher("navigate", ::onNavigateDispatcher);
      ScrollOverview::Config::registerDispatcher("window", ::onWindowDispatcher);
@@ -162,7 +167,7 @@ index 4eed7c1..b261c35 100644
      return {"scrolloverview", "A plugin for an overview", "Vaxry, yayuuu", SCROLLOVERVIEW_VERSION};
  }
 diff --git i/scrollOverview.cpp w/scrollOverview.cpp
-index b4db2d5..b23e65e 100644
+index b4db2d5..8d5e5be 100644
 --- i/scrollOverview.cpp
 +++ w/scrollOverview.cpp
 @@ -71,6 +71,7 @@
@@ -306,10 +311,21 @@ index b4db2d5..b23e65e 100644
      const auto SELECTEDWORKSPACE    = PRESERVEMONITORSTATE ?
          (MONITOR ? MONITOR->m_activeWorkspace : PHLWORKSPACE{}) :
          (viewportCurrentWorkspace < images.size() && images[viewportCurrentWorkspace] ? images[viewportCurrentWorkspace]->pWorkspace : PHLWORKSPACE{});
-@@ -5173,6 +5194,50 @@ void CScrollOverview::reopen() {
-     damage();
- }
- 
+@@ -5167,12 +5188,60 @@ void CScrollOverview::reopen() {
+     closeApplied        = false;
+     closeRemovalPending = false;
+     setClosing(false);
+-    activateSubmapIfConfigured();
++    // A transit is not interactive: it keeps normal keybinds and its own
++    // shallower zoom, and waits for the next switch to settle before closing.
++    if (!transit)
++        activateSubmapIfConfigured();
++    transitSwitched = false;
+     emitFullscreenVisibilityState(Desktop::focusState()->window(), true);
++    *scale = transit ? ScrollOverview::Config::getZoomSwitchScale() : ScrollOverview::Config::getScale();
++    damage();
++}
++
 +void CScrollOverview::beginTransit() {
 +    transit         = true;
 +    transitSwitched = false;
@@ -346,10 +362,10 @@ index b4db2d5..b23e65e 100644
 +    viewOffset->setConfig(WINDOWSMOVECONFIG);
 +    workspaceInsertProgress->setConfig(WINDOWSMOVECONFIG);
 +    activateSubmapIfConfigured();
-+    *scale = ScrollOverview::Config::getScale();
-+    damage();
-+}
-+
+     *scale = ScrollOverview::Config::getScale();
+     damage();
+ }
+ 
 +bool CScrollOverview::isTransit() const {
 +    return transit;
 +}
@@ -357,7 +373,7 @@ index b4db2d5..b23e65e 100644
  void CScrollOverview::onPreRender() {
      if (pMonitor)
          pMonitor->m_solitaryClient.reset();
-@@ -5189,11 +5254,23 @@ void CScrollOverview::onPreRender() {
+@@ -5189,11 +5258,23 @@ void CScrollOverview::onPreRender() {
          onWorkspaceChange();
          focusSyncedFromWorkspaceID = WORKSPACE_INVALID;
          emitFullscreenVisibilityState(Desktop::focusState()->window(), true);
@@ -381,7 +397,7 @@ index b4db2d5..b23e65e 100644
      if (rebuildPending) {
          rebuildPending = false;
          markBlurDirty();
-@@ -5428,6 +5505,7 @@ void CScrollOverview::releaseInputListeners() {
+@@ -5428,6 +5509,7 @@ void CScrollOverview::releaseInputListeners() {
      mouseButtonHook.reset();
      touchDownHook.reset();
      keyboardKeyHook.reset();
@@ -389,7 +405,7 @@ index b4db2d5..b23e65e 100644
      dragKeyboardKeyHook.reset();
  }
  
-@@ -5437,14 +5515,8 @@ void CScrollOverview::activateSubmapIfConfigured() {
+@@ -5437,14 +5519,8 @@ void CScrollOverview::activateSubmapIfConfigured() {
  
      previousSubmapName = g_pKeybindManager->getCurrentSubmap().name;
  
@@ -406,7 +422,7 @@ index b4db2d5..b23e65e 100644
          usesSubmapKeybinds = false;
          return;
      }
-@@ -5457,10 +5529,8 @@ void CScrollOverview::restoreSubmapIfActive() {
+@@ -5457,10 +5533,8 @@ void CScrollOverview::restoreSubmapIfActive() {
          return;
  
      const auto CURRENT = g_pKeybindManager->getCurrentSubmap().name;
