@@ -320,7 +320,9 @@ function Grid.setup(options)
                 if suppress_auto_reveal or not window or window.floating or not api.is_active(window) then
                     return
                 end
-                local state = engine.workspaces[tostring(window.workspace.id)]
+                -- Windows being unmapped or moved can report no workspace.
+                local workspace_id = window.workspace and window.workspace.id
+                local state = workspace_id ~= nil and engine.workspaces[tostring(workspace_id)] or nil
                 if state and state.empty_row and state.empty_row.selected then
                     -- Focus restoration and mouse-follow during a slide must
                     -- not send input back into an offscreen shared window.

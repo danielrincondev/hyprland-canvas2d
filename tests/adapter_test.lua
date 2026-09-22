@@ -175,6 +175,14 @@ return function(T)
         T.near(first.placed.x, 250)
     end)
 
+    T.case("focus events for windows without a workspace are ignored safely", function()
+        local owner = workspace(105)
+        local first = target(5001, true, owner)
+        provider.recalculate(context(owner, { first }, { x = 0, y = 0, w = 1000, h = 800 }))
+        first.window.workspace = nil
+        handlers["window.active"][1](first.window, 0)
+    end)
+
     T.case("adapter spatial focus dispatches the selected window object", function()
         local owner = workspace(102)
         local left = target(2001, true, owner)
